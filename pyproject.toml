@@ -12,12 +12,14 @@ dependencies = [
     "langchain-community>=0.4.2",
     "langchain-openai>=1.2.2",
     "langchain-tavily>=0.2.18",
+    "langgraph>=0.2.60",
     "langgraph-checkpoint-sqlite>=3.1.0",
     "langgraph-cli[inmem]>=0.4.27",
     "notebook>=7.5.6",
     "openai>=2.38.0",
     "python-dotenv>=1.2.2",
     "redis>=8.0.0",
+    "uvicorn[standard]>=0.30.6",
 ]
 
 [[tool.uv.index]]

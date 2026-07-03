@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sky AI 智能助手</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f0f2f5; height: 100vh; display: flex; justify-content: center; align-items: center;
+  }
+  .chat-container {
+    width: 420px; height: 620px; background: #fff; border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .chat-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #fff; padding: 20px 24px;
+  }
+  .chat-header h1 { font-size: 18px; font-weight: 600; }
+  .chat-header p { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+  .chat-messages {
+    flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .message {
+    max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6;
+    word-break: break-word; animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .message.user {
+    background: #667eea; color: #fff; align-self: flex-end; border-bottom-right-radius: 4px;
+  }
+  .message.bot {
+    background: #f0f2f5; color: #1a1a2e; align-self: flex-start; border-bottom-left-radius: 4px;
+  }
+  .message.bot.typing::after {
+    content: ""; display: inline-block; width: 8px; height: 16px;
+    background: #667eea; margin-left: 4px; animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .message .time {
+    font-size: 11px; opacity: 0.6; margin-top: 4px; display: block;
+  }
+  .message.user .time { text-align: right; }
+  .chat-input {
+    display: flex; padding: 12px 16px; border-top: 1px solid #e8e8e8; background: #fff; gap: 8px;
+  }
+  .chat-input input {
+    flex: 1; padding: 10px 14px; border: 1px solid #e0e0e0; border-radius: 24px;
+    font-size: 14px; outline: none; transition: border-color 0.2s;
+  }
+  .chat-input input:focus { border-color: #667eea; }
+  .chat-input button {
+    padding: 10px 20px; border: none; border-radius: 24px; background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff; font-size: 14px; cursor: pointer; transition: opacity 0.2s;
+  }
+  .chat-input button:hover { opacity: 0.9; }
+  .chat-input button:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<div class="chat-container">
+  <div class="chat-header">
+    <h1>Sky AI 智能助手</h1>
+    <p>基于 LangGraph ReAct 智能体 · 通义千问驱动</p>
+  </div>
+  <div class="chat-messages" id="messages">
+    <div class="message bot">
+      你好！我是 Sky AI 智能助手。问我任何问题，比如"现在几点了？" 📅
+      <span class="time">刚刚</span>
+    </div>
+  </div>
+  <div class="chat-input">
+    <input type="text" id="input" placeholder="输入你的问题..." autofocus>
+    <button id="sendBtn">发送</button>
+  </div>
+</div>
+
+<script>
+const API_URL = 'http://localhost:8100/agent/chat';
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+let sessionId = 'web-' + Date.now();
+
+function addMessage(text, role) {
+  const div = document.createElement('div');
+  div.className = 'message ' + role;
+  div.textContent = text;
+  const time = document.createElement('span');
+  time.className = 'time';
+  time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  div.appendChild(time);
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function showTyping() {
+  const div = document.createElement('div');
+  div.className = 'message bot typing';
+  div.textContent = '思考中';
+  div.id = 'typing';
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function removeTyping() {
+  const el = document.getElementById('typing');
+  if (el) el.remove();
+}
+
+async function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text) return;
+  inputEl.value = '';
+  sendBtn.disabled = true;
+  addMessage(text, 'user');
+  showTyping();
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, session_id: sessionId })
+    });
+    removeTyping();
+    const data = await res.json();
+    addMessage(data.reply || '(空回复)', 'bot');
+  } catch (err) {
+    removeTyping();
+    addMessage('连接失败，请确认 Python 服务是否运行在 ' + API_URL, 'bot');
+  } finally {
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+sendBtn.addEventListener('click', sendMessage);
+inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+</script>
+
+</body>
+</html>
