@@ -1,3 +1,4 @@
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -5,26 +6,27 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import StreamingResponse
 
-from agent.schemas import ChatRequest, ChatResponse
-from agent.agent import run_agent
+from agent.schemas import ChatRequest
+from agent.agent import run_agent_stream
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI):               #生命周期
     logger.info("Sky Agent Service 启动中...")
     yield
     logger.info("Sky Agent Service 关闭中...")
 
 
-app = FastAPI(title="Sky Agent Service", version="1.0.0", lifespan=lifespan,
+app = FastAPI(title="Sky Agent Service", version="1.0.0", lifespan=lifespan,        #创建一个FastAPI应用
               docs_url=None, redoc_url="/redoc")
 
 
-@app.get("/docs", include_in_schema=False)
+@app.get("/docs", include_in_schema=False)              #创建一个路由，用于访问Swagger UI
 async def custom_swagger_ui_html():
     return get_swagger_ui_html(
         openapi_url=app.openapi_url,
@@ -34,7 +36,7 @@ async def custom_swagger_ui_html():
     )
 
 
-@app.get("/", include_in_schema=False)
+@app.get("/", include_in_schema=False)                  #创建一个路由，用于访问聊天页面
 async def chat_page():
     from fastapi.responses import HTMLResponse
     with open("static/chat.html", encoding="utf-8") as f:
@@ -50,11 +52,16 @@ app.add_middleware(
 )
 
 
-@app.post("/agent/chat", response_model=ChatResponse)
+@app.post("/agent/chat")               #创建一个路由，用于处理聊天请求（流式输出）
 async def chat(request: ChatRequest):
     logger.info(f"收到请求: session={request.session_id}, message={request.message}")
-    reply = await run_agent(request.message)
-    return ChatResponse(reply=reply, session_id=request.session_id)
+
+    async def generate():
+        async for chunk in run_agent_stream(request.message):
+            yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.get("/health")
