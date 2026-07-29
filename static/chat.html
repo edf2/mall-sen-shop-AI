@@ -16,10 +16,18 @@
   }
   .chat-header {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: #fff; padding: 20px 24px;
+    color: #fff; padding: 20px 24px; display: flex; justify-content: space-between; align-items: center;
   }
-  .chat-header h1 { font-size: 18px; font-weight: 600; }
-  .chat-header p { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+  .chat-header-left h1 { font-size: 18px; font-weight: 600; }
+  .chat-header-left p { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+  .chat-header-actions { display: flex; gap: 6px; }
+  .chat-header .btn-icon {
+    width: 34px; height: 34px; border: none; background: rgba(255,255,255,0.15);
+    color: #fff; border-radius: 8px; cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center; transition: background 0.2s;
+  }
+  .chat-header .btn-icon:hover { background: rgba(255,255,255,0.3); }
+
   .chat-messages {
     flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px;
   }
@@ -57,14 +65,66 @@
   }
   .chat-input button:hover { opacity: 0.9; }
   .chat-input button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── Modal ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+    z-index: 1000; justify-content: center; align-items: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 12px; width: 520px; max-width: 90vw;
+    max-height: 80vh; display: flex; flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  }
+  .modal-header {
+    padding: 16px 24px; border-bottom: 1px solid #e8e8e8;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .modal-header h3 { font-size: 16px; font-weight: 600; }
+  .modal-close {
+    width: 32px; height: 32px; border: none; background: none;
+    font-size: 20px; cursor: pointer; color: #999; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-close:hover { background: #f5f5f5; color: #333; }
+  .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
+  .modal-footer {
+    padding: 12px 24px; border-top: 1px solid #e8e8e8;
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+
+  .history-list { max-height: 400px; overflow-y: auto; }
+  .history-item {
+    padding: 14px 16px; border: 1px solid #f0f0f0; border-radius: 8px;
+    margin-bottom: 8px; cursor: pointer; transition: background 0.2s;
+  }
+  .history-item:hover { background: #f5f5f5; }
+  .history-item .hi-time { font-size: 12px; color: #999; margin-bottom: 4px; }
+  .history-item .hi-preview { font-size: 14px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-item .hi-meta { font-size: 12px; color: #999; margin-top: 4px; }
+
+  .history-detail-msg { margin-bottom: 12px; }
+  .history-detail-msg .hdm-role { font-size: 12px; color: #999; margin-bottom: 2px; }
+  .history-detail-msg .hdm-content {
+    padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.6;
+    background: #f0f2f5; color: #1a1a2e;
+  }
+  .history-detail-msg.hdm-user .hdm-content { background: #667eea; color: #fff; }
 </style>
 </head>
 <body>
 
 <div class="chat-container">
   <div class="chat-header">
-    <h1>Sky AI 智能助手</h1>
-    <p>基于 LangGraph ReAct 智能体 · 通义千问驱动</p>
+    <div class="chat-header-left">
+      <h1>Sky AI 智能助手</h1>
+      <p>基于 LangGraph ReAct 智能体 · 通义千问驱动</p>
+    </div>
+    <div class="chat-header-actions">
+      <button class="btn-icon" onclick="newConversation()" title="新建对话">➕</button>
+      <button class="btn-icon" onclick="openHistoryModal()" title="历史会话">📋</button>
+    </div>
   </div>
   <div class="chat-messages" id="messages">
     <div class="message bot">
@@ -78,12 +138,65 @@
   </div>
 </div>
 
+<!-- ── 历史会话 Modal ── -->
+<div class="modal-overlay" id="historyModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📋 历史会话</h3>
+      <button class="modal-close" onclick="closeHistoryModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="historyList" class="history-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeHistoryModal()" style="padding:8px 20px;border:1px solid #d9d9d9;border-radius:6px;background:#fff;cursor:pointer;">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 会话详情 Modal ── -->
+<div class="modal-overlay" id="historyDetailModal">
+  <div class="modal" style="width:600px;">
+    <div class="modal-header">
+      <h3>💬 会话详情</h3>
+      <button class="modal-close" onclick="closeHistoryDetailModal()">✕</button>
+    </div>
+    <div class="modal-body" id="historyDetailBody"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeHistoryDetailModal()" style="padding:8px 20px;border:1px solid #d9d9d9;border-radius:6px;background:#fff;cursor:pointer;">关闭</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API_URL = 'http://localhost:8100/agent/chat/stream';
+const SESSION_API = 'http://localhost:8100/agent/sessions';
+
+// ── Session ID 持久化 ──
+function getSessionId() {
+  let sid = localStorage.getItem('user_session_id');
+  if (!sid) {
+    sid = 'web-' + Date.now();
+    localStorage.setItem('user_session_id', sid);
+  }
+  return sid;
+}
+
+function newConversation() {
+  if (!confirm('确定要开始新对话吗？当前对话将被保存。')) return;
+  const sid = 'web-' + Date.now();
+  localStorage.setItem('user_session_id', sid);
+  document.getElementById('messages').innerHTML = `
+    <div class="message bot">
+      你好！我是 Sky AI 智能助手。问我任何问题，比如"现在几点了？" 📅
+      <span class="time">刚刚</span>
+    </div>
+  `;
+}
+
 const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
-let sessionId = 'web-' + Date.now();
 
 function addMessage(text, role, showTime = true) {
   const div = document.createElement('div');
@@ -114,6 +227,25 @@ function removeTyping() {
   if (el) el.remove();
 }
 
+async function loadChatHistory() {
+  const sessionId = getSessionId();
+  try {
+    const res = await fetch(`${SESSION_API}/${sessionId}/messages`);
+    const json = await res.json();
+    if (json.code === 1 && json.data.length > 0) {
+      messagesEl.innerHTML = '';
+      for (const m of json.data) {
+        if (m.type === 'human' || m.type === 'ai') {
+          const role = m.type === 'human' ? 'user' : 'bot';
+          const content = m.data?.content || '';
+          if (!content) continue;
+          addMessage(content, role);
+        }
+      }
+    }
+  } catch (e) { /* ignore */ }
+}
+
 async function sendMessage() {
   const text = inputEl.value.trim();
   if (!text) return;
@@ -125,7 +257,7 @@ async function sendMessage() {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, session_id: sessionId })
+      body: JSON.stringify({ message: text, session_id: getSessionId() })
     });
     removeTyping();
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -152,7 +284,6 @@ async function sendMessage() {
         }
       }
     }
-    // 流结束后添加时间戳
     const time = document.createElement('span');
     time.className = 'time';
     time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -168,7 +299,86 @@ async function sendMessage() {
 
 sendBtn.addEventListener('click', sendMessage);
 inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
-</script>
 
+// ── 历史会话 ──
+async function openHistoryModal() {
+  document.getElementById('historyModal').classList.add('show');
+  document.getElementById('historyList').innerHTML = '<div style="text-align:center;padding:24px;color:#999;">加载中...</div>';
+  try {
+    const res = await fetch(`${SESSION_API}?role=user&limit=50`);
+    const json = await res.json();
+    if (json.code !== 1) throw new Error(json.msg || '加载失败');
+    const sessions = json.data;
+    const container = document.getElementById('historyList');
+    if (!sessions.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:#999;">暂无历史会话</div>';
+      return;
+    }
+    container.innerHTML = sessions.map(s => `
+      <div class="history-item" onclick="openHistoryDetail('${s.session_id}')">
+        <div class="hi-time">${formatTime(s.created_at)}</div>
+        <div class="hi-preview">${s.preview || '(空)'}</div>
+        <div class="hi-meta">共 ${s.message_count} 条消息</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('historyList').innerHTML = '<div style="text-align:center;padding:24px;color:#ff4d4f;">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function closeHistoryModal() {
+  document.getElementById('historyModal').classList.remove('show');
+}
+
+function formatTime(ts) {
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function openHistoryDetail(sessionId) {
+  closeHistoryModal();
+  document.getElementById('historyDetailModal').classList.add('show');
+  document.getElementById('historyDetailBody').innerHTML = '<div style="text-align:center;padding:24px;color:#999;">加载中...</div>';
+  try {
+    const res = await fetch(`${SESSION_API}/${sessionId}/messages`);
+    const json = await res.json();
+    if (json.code !== 1) throw new Error(json.msg || '加载失败');
+    const messages = json.data;
+    const container = document.getElementById('historyDetailBody');
+    if (!messages.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:#999;">暂无消息</div>';
+      return;
+    }
+    container.innerHTML = messages.map(m => {
+      const role = m.type === 'human' ? '用户' : (m.type === 'ai' ? 'AI' : m.type);
+      const content = m.data?.content || '';
+      if (!content) return '';
+      const cls = m.type === 'human' ? 'hdm-user' : '';
+      return `
+        <div class="history-detail-msg ${cls}">
+          <div class="hdm-role">${role}</div>
+          <div class="hdm-content">${escapeHtml(content)}</div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    document.getElementById('historyDetailBody').innerHTML = '<div style="text-align:center;padding:24px;color:#ff4d4f;">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function closeHistoryDetailModal() {
+  document.getElementById('historyDetailModal').classList.remove('show');
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ── 加载历史消息 ──
+loadChatHistory();
+</script>
 </body>
 </html>
