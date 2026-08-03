@@ -9,7 +9,11 @@ from datetime import datetime
 from typing import Any
 
 JAVA_BACKEND_URL = os.getenv("JAVA_BACKEND_URL", "http://localhost:8080")
-ADMIN_JWT_TOKEN = os.getenv("ADMIN_JWT_TOKEN", "")
+# 与 Java 后端约定的共享密钥（application.yml 的 agent.service.api-key / AGENT_API_KEY）。
+# 商家 AI 调用 Java 的 /admin/business/ai/** 与 /admin/purchase-order/** 时携带 x-agent-key，
+# Java 端 JwtTokenAdminInterceptor 对这两类前缀放行该密钥校验。共享密钥无过期时间，
+# 取代此前的静态 ADMIN_JWT_TOKEN（8 天 TTL 过期后整个商家 AI 静默失效且无刷新机制）。
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "change-me")
 
 # 当前请求的用户 JWT（由 run_agent 在进入 Agent 前按请求注入，任务级隔离）
 _current_user_token: contextvars.ContextVar[str] = contextvars.ContextVar("current_user_token", default="")
@@ -30,9 +34,10 @@ def get_current_time(location: str = "中国") -> dict[str, Any]:
 
 
 def _get_headers() -> dict:
-    headers = {}
-    if ADMIN_JWT_TOKEN:
-        headers["token"] = ADMIN_JWT_TOKEN
+    """商家工具调用 Java 后端时携带共享密钥 x-agent-key（无过期时间，无需刷新）"""
+    headers = {"Content-Type": "application/json"}
+    if AGENT_API_KEY:
+        headers["x-agent-key"] = AGENT_API_KEY
     return headers
 
 

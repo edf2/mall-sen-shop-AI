@@ -3,15 +3,12 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
-from typing import Optional
 
-import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
 
 from agent.schemas import ChatRequest, ChatResponse
 from agent.agent import run_agent, run_agent_stream, memory
@@ -31,14 +28,14 @@ app = FastAPI(title="Sky Agent Service", version="1.0.0", lifespan=lifespan,
               docs_url=None, redoc_url="/redoc")
 
 # ─── 内部鉴权 ─────────────────────────────────────────
-# AGENT_API_KEY：调用 /agent/** 与 /api/** 必须携带请求头 x-agent-key 且与此一致。
-# 安全背景：该服务同时承载「商家采购单增删改」与「所有用户会话/对话历史」，
-# 若对外暴露且无鉴权，任何人可越权读写他人对话或篡改采购数据。
+# AGENT_API_KEY：调用 /agent/** 必须携带请求头 x-agent-key 且与此一致。
+# 安全背景：该服务承载「所有用户会话/对话历史」与对 Java 后端的 AI 数据调用，
+# 若对外暴露且无鉴权，任何人可越权读写他人对话。
 # Java 端 AgentClientConfig 会统一注入该请求头（sky.agent.api-key）。
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "change-me")
 
-# 明确受保护的前缀（其余为 public：健康检查、静态调试页、Swagger）
-_PROTECTED_PREFIXES = ("/agent/", "/api/")
+# 明确受保护的前缀（其余为 public：健康检查、Swagger、聊天页）
+_PROTECTED_PREFIXES = ("/agent/",)
 
 
 @app.middleware("http")
@@ -50,201 +47,11 @@ async def require_api_key(request: Request, call_next):
     return await call_next(request)
 
 
-# ─── 采购订单代理（转发到 Java 后端）────────────────────
-JAVA_BACKEND_URL = os.getenv("JAVA_BACKEND_URL", "http://localhost:8080")
-ADMIN_JWT_TOKEN = os.getenv("ADMIN_JWT_TOKEN", "")
-
-
-def _get_java_headers() -> dict:
-    headers = {"Content-Type": "application/json"}
-    if ADMIN_JWT_TOKEN:
-        headers["token"] = ADMIN_JWT_TOKEN
-    return headers
-
-
-@app.get("/api/purchase-orders")
-async def list_purchase_orders(status: Optional[str] = Query(None)):
-    try:
-        params: dict = {"page": 1, "pageSize": 100}
-        if status:
-            params["status"] = status
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{JAVA_BACKEND_URL}/admin/purchase-order/page",
-                params=params, headers=_get_java_headers()
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get("code") == 1:
-                records = result.get("data", {}).get("records", [])
-                # 转换为前端兼容格式
-                orders = [
-                    {
-                        "orderId": o.get("id"),
-                        "orderNumber": o.get("orderNumber"),
-                        "createTime": o.get("createTime", ""),
-                        "status": o.get("status", "PENDING"),
-                        "totalAmount": o.get("totalAmount", 0),
-                        "notes": o.get("notes", ""),
-                        "items": [],
-                    }
-                    for o in records
-                ]
-                return {"code": 1, "data": orders, "total": len(orders)}
-            return {"code": 0, "data": [], "total": 0, "msg": result.get("msg", "")}
-    except Exception as e:
-        logger.error(f"查询采购单失败: {e}")
-        return {"code": 0, "data": [], "total": 0, "msg": str(e)}
-
-
-@app.get("/api/purchase-orders/{order_id}")
-async def get_purchase_order(order_id: int):
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{JAVA_BACKEND_URL}/admin/purchase-order/{order_id}",
-                headers=_get_java_headers()
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get("code") == 1:
-                data = result["data"]
-                order = {
-                    "orderId": data.get("id"),
-                    "orderNumber": data.get("orderNumber"),
-                    "createTime": data.get("createTime", ""),
-                    "status": data.get("status", "PENDING"),
-                    "items": [
-                        {
-                            "productId": i.get("productId"),
-                            "productName": i.get("productName", ""),
-                            "quantity": i.get("quantity", 0),
-                            "unitPrice": i.get("unitPrice", 0),
-                            "subtotal": i.get("subtotal", 0),
-                        }
-                        for i in (data.get("items") or [])
-                    ],
-                    "totalAmount": data.get("totalAmount", 0),
-                    "notes": data.get("notes", ""),
-                }
-                return {"code": 1, "data": order}
-            raise HTTPException(status_code=404, detail=result.get("msg", "采购单不存在"))
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="采购单不存在")
-        raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
-
-
-class POItem(BaseModel):
-    productId: int
-    productName: str = ""
-    quantity: int
-    unitPrice: float = 0
-
-
-class CreatePORequest(BaseModel):
-    items: list[POItem]
-    notes: str = ""
-
-
-class UpdatePOStatusRequest(BaseModel):
-    status: str
-
-
-@app.post("/api/purchase-orders")
-async def create_purchase_order(req: CreatePORequest):
-    try:
-        payload = {
-            "items": [
-                {
-                    "productId": item.productId,
-                    "productName": item.productName,
-                    "quantity": item.quantity,
-                    "unitPrice": item.unitPrice,
-                }
-                for item in req.items
-            ],
-            "notes": req.notes,
-        }
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{JAVA_BACKEND_URL}/admin/purchase-order",
-                json=payload, headers=_get_java_headers()
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get("code") == 1:
-                data = result["data"]
-                order = {
-                    "orderId": data.get("id"),
-                    "orderNumber": data.get("orderNumber"),
-                    "createTime": data.get("createTime", ""),
-                    "status": data.get("status", "PENDING"),
-                    "items": [
-                        {
-                            "productId": i.get("productId"),
-                            "productName": i.get("productName", ""),
-                            "quantity": i.get("quantity", 0),
-                            "unitPrice": i.get("unitPrice", 0),
-                            "subtotal": i.get("subtotal", 0),
-                        }
-                        for i in (data.get("items") or [])
-                    ],
-                    "totalAmount": data.get("totalAmount", 0),
-                    "notes": data.get("notes", ""),
-                }
-                return {"code": 1, "data": order}
-            raise HTTPException(status_code=500, detail=result.get("msg", "创建失败"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"创建采购单失败: {str(e)}")
-
-
-@app.put("/api/purchase-orders/{order_id}/status")
-async def update_purchase_order_status(order_id: int, req: UpdatePOStatusRequest):
-    valid_statuses = ["PENDING", "APPROVED", "RECEIVED", "CANCELLED"]
-    if req.status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"无效状态，可选: {', '.join(valid_statuses)}")
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.put(
-                f"{JAVA_BACKEND_URL}/admin/purchase-order/{order_id}/status",
-                json={"status": req.status}, headers=_get_java_headers()
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get("code") == 1:
-                return {"code": 1, "msg": "状态更新成功"}
-            raise HTTPException(status_code=500, detail=result.get("msg", "更新失败"))
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="采购单不存在")
-        raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
-
-
-@app.delete("/api/purchase-orders/{order_id}")
-async def delete_purchase_order(order_id: int):
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.delete(
-                f"{JAVA_BACKEND_URL}/admin/purchase-order/{order_id}",
-                headers=_get_java_headers()
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get("code") == 1:
-                return {"code": 1, "msg": "删除成功"}
-            raise HTTPException(status_code=500, detail=result.get("msg", "删除失败"))
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="采购单不存在")
-        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
-
+# 说明：采购订单的增删改查已移除。采购单管理是 Java 后端（/admin/purchase-order/**）
+# 与商家后台（project-sky-admin-vue-ts）的 BFF 职责，不属 Agent 服务；此前在此暴露的
+# /api/purchase-orders 全量 CRUD 代理 + admin.html 调试页已删除，避免职责重叠与静态
+# ADMIN_JWT_TOKEN 过期（8 天 TTL）后整个商家 AI 静默失效。Agent 工具调用 Java 后端时
+# 使用不设过期时间的共享密钥 x-agent-key（见 agent/tools.py），无需刷新。
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
@@ -259,12 +66,6 @@ async def custom_swagger_ui_html():
 @app.get("/", include_in_schema=False)
 async def chat_page():
     with open("static/chat.html", encoding="utf-8") as f:
-        return HTMLResponse(f.read())
-
-
-@app.get("/admin", include_in_schema=False)
-async def admin_page():
-    with open("static/admin.html", encoding="utf-8") as f:
         return HTMLResponse(f.read())
 
 
@@ -338,5 +139,5 @@ async def health():
 
 
 if __name__ == "__main__":
-    # 仅监听本机回环地址，进一步收紧网络暴露面（配合 /agent、/api 的 x-agent-key 鉴权）
+    # 仅监听本机回环地址，进一步收紧网络暴露面（配合 /agent 的 x-agent-key 鉴权）
     uvicorn.run("main:app", host="127.0.0.1", port=8100, reload=False)
