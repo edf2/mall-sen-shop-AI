@@ -1,15 +1,16 @@
 import json
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agent.schemas import ChatRequest, ChatResponse
@@ -28,6 +29,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Sky Agent Service", version="1.0.0", lifespan=lifespan,
               docs_url=None, redoc_url="/redoc")
+
+# ─── 内部鉴权 ─────────────────────────────────────────
+# AGENT_API_KEY：调用 /agent/** 与 /api/** 必须携带请求头 x-agent-key 且与此一致。
+# 安全背景：该服务同时承载「商家采购单增删改」与「所有用户会话/对话历史」，
+# 若对外暴露且无鉴权，任何人可越权读写他人对话或篡改采购数据。
+# Java 端 AgentClientConfig 会统一注入该请求头（sky.agent.api-key）。
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "change-me")
+
+# 明确受保护的前缀（其余为 public：健康检查、静态调试页、Swagger）
+_PROTECTED_PREFIXES = ("/agent/", "/api/")
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    if request.url.path.startswith(_PROTECTED_PREFIXES):
+        if not secrets.compare_digest(request.headers.get("x-agent-key", ""), AGENT_API_KEY):
+            logger.warning("Agent 服务鉴权失败: 401 %s (source=%s)", request.url.path, request.client.host if request.client else "?")
+            return JSONResponse(status_code=401, content={"code": 0, "msg": "非法请求：缺少或错误的 x-agent-key"})
+    return await call_next(request)
+
 
 # ─── 采购订单代理（转发到 Java 后端）────────────────────
 JAVA_BACKEND_URL = os.getenv("JAVA_BACKEND_URL", "http://localhost:8080")
@@ -250,26 +271,36 @@ async def admin_page():
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+def _validate_message(message: str) -> None:
+    """校验对话消息：非空 + 长度限制"""
+    if not message or not message.strip():
+        raise HTTPException(status_code=400, detail="message 不能为空")
+    if len(message) > 2000:
+        raise HTTPException(status_code=400, detail="message 过长，最多2000字符")
+
+
 @app.post("/agent/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     logger.info(f"收到请求: session={request.session_id}, role={request.role}, message={request.message}, user_id={request.user_id}")
-    reply = await run_agent(request.message, request.role, user_id=request.user_id or "", session_id=request.session_id)
+    _validate_message(request.message)
+    reply = await run_agent(request.message, request.role, user_id=request.user_id or "", session_id=request.session_id, token=request.token)
     return ChatResponse(reply=reply, session_id=request.session_id)
 
 
 @app.post("/agent/chat/stream")
 async def chat_stream(request: ChatRequest):
     logger.info(f"收到流式请求: session={request.session_id}, role={request.role}, message={request.message}")
+    _validate_message(request.message)
 
     async def generate():
         try:
-            async for chunk in run_agent_stream(request.message, request.role, session_id=request.session_id):
+            async for chunk in run_agent_stream(request.message, request.role, session_id=request.session_id, token=request.token):
                 data = json.dumps({"token": chunk, "session_id": request.session_id}, ensure_ascii=False)
                 yield f"data: {data}\n\n"
             yield "data: [DONE]\n\n"
@@ -307,4 +338,5 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8100, reload=False)
+    # 仅监听本机回环地址，进一步收紧网络暴露面（配合 /agent、/api 的 x-agent-key 鉴权）
+    uvicorn.run("main:app", host="127.0.0.1", port=8100, reload=False)

@@ -1,0 +1,42 @@
+{
+  "nextId": 2,
+  "orders": [
+    {
+      "orderId": 1,
+      "createTime": "2026-07-24 16:19:53",
+      "status": "PENDING",
+      "items": [
+        {
+          "productId": 71,
+          "productName": "可口可乐",
+          "quantity": 36,
+          "unitPrice": 0,
+          "subtotal": 0
+        },
+        {
+          "productId": 72,
+          "productName": "雪碧",
+          "quantity": 19,
+          "unitPrice": 0,
+          "subtotal": 0
+        },
+        {
+          "productId": 73,
+          "productName": "好丽友派",
+          "quantity": 32,
+          "unitPrice": 0,
+          "subtotal": 0
+        },
+        {
+          "productId": 75,
+          "productName": "芬达",
+          "quantity": 14,
+          "unitPrice": 0,
+          "subtotal": 0
+        }
+      ],
+      "totalAmount": 0.0,
+      "notes": "针对低于库存警戒线(10)的4款商品进行补货。建议采购量按30天日均销量测算，旨在将库存恢复至安全水平。"
+    }
+  ]
+}

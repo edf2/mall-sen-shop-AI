@@ -6,6 +6,7 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
     user_id: str | None = None
     role: str = "user"
+    token: str = ""
 
 
 class ChatResponse(BaseModel):

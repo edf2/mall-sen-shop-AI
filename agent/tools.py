@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import json
 import math
 import os
@@ -9,6 +10,13 @@ from typing import Any
 
 JAVA_BACKEND_URL = os.getenv("JAVA_BACKEND_URL", "http://localhost:8080")
 ADMIN_JWT_TOKEN = os.getenv("ADMIN_JWT_TOKEN", "")
+
+# 当前请求的用户 JWT（由 run_agent 在进入 Agent 前按请求注入，任务级隔离）
+_current_user_token: contextvars.ContextVar[str] = contextvars.ContextVar("current_user_token", default="")
+
+
+def set_user_token(token: str) -> None:
+    _current_user_token.set(token)
 
 
 def get_current_time(location: str = "中国") -> dict[str, Any]:
@@ -21,16 +29,19 @@ def get_current_time(location: str = "中国") -> dict[str, Any]:
     }
 
 
-async def analyze_product_sales(product_id: int, days: int = 30) -> dict[str, Any]:
-    """
-    分析指定商品的销售趋势
-    调用 Java 后端 API: GET /api/business/ai/product-sales?productId={id}&days={days}
-    返回: 历史销量、日均销量、当前库存、预计耗尽天数
-    """
 def _get_headers() -> dict:
     headers = {}
     if ADMIN_JWT_TOKEN:
         headers["token"] = ADMIN_JWT_TOKEN
+    return headers
+
+
+def _get_user_headers() -> dict:
+    """用户工具调用 Java 时携带用户 JWT，保证 /user/business/ai/** 能通过用户拦截器鉴权"""
+    headers = {"Content-Type": "application/json"}
+    token = _current_user_token.get()
+    if token:
+        headers["authentication"] = token
     return headers
 
 
@@ -290,7 +301,7 @@ async def search_products(
 ) -> dict[str, Any]:
     """
     搜索推荐商品
-    调用 Java 后端 API: GET /admin/business/ai/user/product/search
+    调用 Java 后端 API: GET /user/business/ai/product/search
     返回: {records: [{productId, productName, price, image, sales, ...}], total, page, pageSize}
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -301,9 +312,9 @@ async def search_products(
             if category_id > 0:
                 params["categoryId"] = category_id
             response = await client.get(
-                f"{JAVA_BACKEND_URL}/admin/business/ai/user/product/search",
+                f"{JAVA_BACKEND_URL}/user/business/ai/product/search",
                 params=params,
-                headers=_get_headers()
+                headers=_get_user_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -316,14 +327,14 @@ async def search_products(
 async def get_order_info(order_id: str) -> dict[str, Any]:
     """
     查询订单详情
-    调用 Java 后端 API: GET /admin/business/ai/user/order/detail/{orderId}
+    调用 Java 后端 API: GET /user/business/ai/order/detail/{orderId}
     返回: {orderId, status, amount, address, items, createTime, ...}
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.get(
-                f"{JAVA_BACKEND_URL}/admin/business/ai/user/order/detail/{order_id}",
-                headers=_get_headers()
+                f"{JAVA_BACKEND_URL}/user/business/ai/order/detail/{order_id}",
+                headers=_get_user_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -336,15 +347,15 @@ async def get_order_info(order_id: str) -> dict[str, Any]:
 async def get_order_history(page: int = 1, page_size: int = 10) -> dict[str, Any]:
     """
     查看历史订单列表
-    调用 Java 后端 API: GET /admin/business/ai/user/order/list?page={page}&pageSize={pageSize}
+    调用 Java 后端 API: GET /user/business/ai/order/list?page={page}&pageSize={pageSize}
     返回: {records: [{orderId, status, totalAmount, createTime, ...}], total, page, pageSize}
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.get(
-                f"{JAVA_BACKEND_URL}/admin/business/ai/user/order/list",
+                f"{JAVA_BACKEND_URL}/user/business/ai/order/list",
                 params={"page": page, "pageSize": page_size},
-                headers=_get_headers()
+                headers=_get_user_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -362,7 +373,7 @@ async def update_order_address(
 ) -> dict[str, Any]:
     """
     修改订单收货地址
-    调用 Java 后端 API: PUT /admin/business/ai/user/order/address
+    调用 Java 后端 API: PUT /user/business/ai/order/address
     参数: {orderId, newAddress, contactName, contactPhone}
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -374,9 +385,9 @@ async def update_order_address(
                 "contactPhone": contact_phone,
             }
             response = await client.put(
-                f"{JAVA_BACKEND_URL}/admin/business/ai/user/order/address",
+                f"{JAVA_BACKEND_URL}/user/business/ai/order/address",
                 json=payload,
-                headers=_get_headers()
+                headers=_get_user_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -389,15 +400,15 @@ async def update_order_address(
 async def get_user_default_address(user_id: str = "") -> dict[str, Any]:
     """
     获取用户的默认收货地址
-    调用 Java 后端 API: GET /admin/business/ai/user/address/default?userId={userId}
+    调用 Java 后端 API: GET /user/business/ai/address/default
     返回: {consignee, phone, fullAddress, label}
+    注意：Java 端从用户 JWT 获取 userId，无需（也不应）传 userId
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.get(
-                f"{JAVA_BACKEND_URL}/admin/business/ai/user/address/default",
-                params={"userId": user_id},
-                headers=_get_headers()
+                f"{JAVA_BACKEND_URL}/user/business/ai/address/default",
+                headers=_get_user_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -417,9 +428,10 @@ async def create_user_order(
 ) -> dict[str, Any]:
     """
     为用户创建订单
-    调用 Java 后端 API: POST /admin/business/ai/user/order/create
+    调用 Java 后端 API: POST /user/business/ai/order/create
     参数 items: [{"productId": int, "name": str, "quantity": int}, ...]
     返回: {orderId, orderNumber, amount, createTime}
+    注意：Java 端从用户 JWT 获取 userId，忽略请求体中的 userId
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
@@ -432,9 +444,9 @@ async def create_user_order(
                 "userId": user_id,
             }
             response = await client.post(
-                f"{JAVA_BACKEND_URL}/admin/business/ai/user/order/create",
+                f"{JAVA_BACKEND_URL}/user/business/ai/order/create",
                 json=payload,
-                headers=_get_headers()
+                headers=_get_user_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -451,7 +463,7 @@ async def apply_refund(
 ) -> dict[str, Any]:
     """
     申请退款
-    调用 Java 后端 API: PUT /admin/business/ai/user/order/refund
+    调用 Java 后端 API: PUT /user/business/ai/order/refund
     参数: {orderId, reason, refundAmount}
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -462,9 +474,9 @@ async def apply_refund(
                 "refundAmount": refund_amount,
             }
             response = await client.put(
-                f"{JAVA_BACKEND_URL}/admin/business/ai/user/order/refund",
+                f"{JAVA_BACKEND_URL}/user/business/ai/order/refund",
                 json=payload,
-                headers=_get_headers()
+                headers=_get_user_headers()
             )
             response.raise_for_status()
             return response.json()

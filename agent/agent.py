@@ -10,7 +10,7 @@ from langgraph.graph import END, MessagesState, StateGraph
 
 from agent.config import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, MODEL_NAME, REDIS_URL, REDIS_TTL
 from agent.redis_memory import RedisChatMemory
-from agent.tools import ADMIN_TOOLS, ADMIN_TOOL_MAP, USER_TOOLS, USER_TOOL_MAP
+from agent.tools import ADMIN_TOOLS, ADMIN_TOOL_MAP, USER_TOOLS, USER_TOOL_MAP, set_user_token
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +159,11 @@ def _get_app(role: str):
     return admin_app if role == "admin" else user_app
 
 
-async def run_agent(user_message: str, role: str = "user", user_id: str = "", session_id: str = "") -> str:
+async def run_agent(user_message: str, role: str = "user", user_id: str = "", session_id: str = "", token: str = "") -> str:
     app = _get_app(role)
+
+    if role == "user":
+        set_user_token(token)
 
     history = await memory.get_messages(session_id)
     msgs = []
@@ -199,8 +202,11 @@ async def run_agent(user_message: str, role: str = "user", user_id: str = "", se
     return "抱歉，我没有生成有效的回复。"
 
 
-async def run_agent_stream(user_message: str, role: str = "user", session_id: str = "") -> AsyncGenerator[str, None]:
+async def run_agent_stream(user_message: str, role: str = "user", session_id: str = "", token: str = "") -> AsyncGenerator[str, None]:
     app = _get_app(role)
+
+    if role == "user":
+        set_user_token(token)
 
     history = await memory.get_messages(session_id)
     inputs = {"messages": history + [HumanMessage(content=user_message)]}

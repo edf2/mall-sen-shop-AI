@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sky AI 管理后台</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f0f2f5; height: 100vh; display: flex;
+  }
+  .sidebar {
+    width: 220px; background: #001529; color: #fff;
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sidebar-brand {
+    padding: 20px 16px; font-size: 18px; font-weight: 600;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  }
+  .sidebar-nav { flex: 1; padding: 8px 0; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 24px; cursor: pointer; transition: all 0.2s;
+    font-size: 14px; color: rgba(255,255,255,0.65);
+    text-decoration: none;
+  }
+  .nav-item:hover { color: #fff; background: rgba(255,255,255,0.08); }
+  .nav-item.active { color: #fff; background: #1890ff; }
+  .nav-item .icon { font-size: 18px; width: 20px; text-align: center; }
+
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .header {
+    height: 56px; background: #fff; padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid #e8e8e8; flex-shrink: 0;
+  }
+  .header h2 { font-size: 16px; font-weight: 600; color: #1a1a2e; }
+  .header-actions { display: flex; align-items: center; gap: 12px; }
+  .content { flex: 1; padding: 24px; overflow-y: auto; }
+
+  .toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px; gap: 12px; flex-wrap: wrap;
+  }
+  .toolbar-left { display: flex; align-items: center; gap: 12px; }
+
+  .btn {
+    padding: 8px 20px; border: none; border-radius: 6px;
+    font-size: 14px; cursor: pointer; transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn-primary { background: #1890ff; color: #fff; }
+  .btn-primary:hover { background: #40a9ff; }
+  .btn-success { background: #52c41a; color: #fff; }
+  .btn-success:hover { background: #73d13d; }
+  .btn-warning { background: #faad14; color: #fff; }
+  .btn-warning:hover { background: #ffc53d; }
+  .btn-danger { background: #ff4d4f; color: #fff; }
+  .btn-danger:hover { background: #ff7875; }
+  .btn-default { background: #fff; color: #333; border: 1px solid #d9d9d9; }
+  .btn-default:hover { border-color: #1890ff; color: #1890ff; }
+  .btn-sm { padding: 4px 12px; font-size: 12px; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .filter-select {
+    padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px;
+    font-size: 14px; outline: none; background: #fff;
+  }
+  .filter-select:focus { border-color: #1890ff; }
+
+  .table-wrap {
+    background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    overflow: auto;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 12px 16px; text-align: left; font-size: 14px; }
+  th { background: #fafafa; color: #666; font-weight: 600; border-bottom: 1px solid #e8e8e8; white-space: nowrap; }
+  td { border-bottom: 1px solid #f0f0f0; }
+  tr:hover td { background: #fafafa; }
+  .text-right { text-align: right; }
+
+  .status-tag {
+    display: inline-block; padding: 2px 10px; border-radius: 10px;
+    font-size: 12px; font-weight: 500;
+  }
+  .status-PENDING { background: #fff7e6; color: #fa8c16; }
+  .status-APPROVED { background: #f6ffed; color: #52c41a; }
+  .status-RECEIVED { background: #e6f7ff; color: #1890ff; }
+  .status-CANCELLED { background: #f5f5f5; color: #999; }
+
+  .empty { text-align: center; padding: 48px 0; color: #999; font-size: 14px; }
+
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+    z-index: 1000; justify-content: center; align-items: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 8px; width: 640px; max-width: 90vw;
+    max-height: 80vh; display: flex; flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  }
+  .modal-header {
+    padding: 16px 24px; border-bottom: 1px solid #e8e8e8;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .modal-header h3 { font-size: 16px; font-weight: 600; }
+  .modal-close {
+    width: 32px; height: 32px; border: none; background: none;
+    font-size: 20px; cursor: pointer; color: #999; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-close:hover { background: #f5f5f5; color: #333; }
+  .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
+  .modal-footer {
+    padding: 12px 24px; border-top: 1px solid #e8e8e8;
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: 14px; color: #333; margin-bottom: 6px; font-weight: 500; }
+  .form-control {
+    width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9;
+    border-radius: 6px; font-size: 14px; outline: none;
+  }
+  .form-control:focus { border-color: #1890ff; }
+  textarea.form-control { resize: vertical; min-height: 60px; }
+
+  .item-row {
+    display: grid; grid-template-columns: 1fr 80px 100px 80px;
+    gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .item-row input { padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; outline: none; }
+  .item-row input:focus { border-color: #1890ff; }
+  .item-row .btn-remove {
+    width: 28px; height: 28px; border: none; background: #fff1f0;
+    color: #ff4d4f; border-radius: 4px; cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .item-row .btn-remove:hover { background: #ffccc7; }
+  .item-header {
+    display: grid; grid-template-columns: 1fr 80px 100px 80px 28px;
+    gap: 8px; font-size: 12px; color: #999; margin-bottom: 4px;
+  }
+
+  .detail-items { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .detail-items th { background: #fafafa; font-size: 13px; padding: 8px 12px; }
+  .detail-items td { padding: 8px 12px; font-size: 13px; }
+  .detail-items tr:last-child td { border-bottom: none; }
+
+  .toast {
+    position: fixed; top: 24px; right: 24px; z-index: 2000;
+    padding: 12px 20px; border-radius: 6px; color: #fff;
+    font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    display: none; animation: slideIn 0.3s ease;
+  }
+  .toast.success { background: #52c41a; }
+  .toast.error { background: #ff4d4f; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* ── AI Chat Float ── */
+  .chat-fab {
+    position: fixed; bottom: 32px; right: 32px; z-index: 500;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff; border: none; font-size: 24px; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(102,126,234,0.4);
+    display: flex; align-items: center; justify-content: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .chat-fab:hover { transform: scale(1.1); box-shadow: 0 6px 24px rgba(102,126,234,0.5); }
+
+  .chat-panel {
+    position: fixed; bottom: 100px; right: 32px; z-index: 490;
+    width: 400px; height: 560px; background: #fff; border-radius: 16px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.18);
+    display: none; flex-direction: column; overflow: hidden;
+    animation: panelIn 0.3s ease;
+  }
+  .chat-panel.open { display: flex; }
+  @keyframes panelIn { from { opacity: 0; transform: translateY(20px) scale(0.95); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+  .chat-panel-header {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff; padding: 14px 18px; display: flex;
+    justify-content: space-between; align-items: center; flex-shrink: 0;
+  }
+  .chat-panel-header h3 { font-size: 15px; font-weight: 600; }
+  .chat-panel-header-actions { display: flex; gap: 6px; }
+  .chat-panel-header .btn-icon {
+    width: 30px; height: 30px; border: none; background: rgba(255,255,255,0.15);
+    color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; transition: background 0.2s;
+  }
+  .chat-panel-header .btn-icon:hover { background: rgba(255,255,255,0.3); }
+
+  .chat-messages {
+    flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .msg {
+    max-width: 88%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6;
+    word-break: break-word; animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .msg.user {
+    background: #667eea; color: #fff; align-self: flex-end; border-bottom-right-radius: 4px;
+  }
+  .msg.bot {
+    background: #f0f2f5; color: #1a1a2e; align-self: flex-start; border-bottom-left-radius: 4px;
+  }
+  .msg.bot.typing::after {
+    content: ""; display: inline-block; width: 6px; height: 14px;
+    background: #667eea; margin-left: 4px; animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .msg .time {
+    font-size: 11px; opacity: 0.6; margin-top: 4px; display: block;
+  }
+  .msg.user .time { text-align: right; }
+
+  .chat-input-area {
+    display: flex; padding: 12px 16px; border-top: 1px solid #e8e8e8; gap: 8px; flex-shrink: 0;
+  }
+  .chat-input-area input {
+    flex: 1; padding: 10px 14px; border: 1px solid #e0e0e0; border-radius: 24px;
+    font-size: 14px; outline: none;
+  }
+  .chat-input-area input:focus { border-color: #667eea; }
+  .chat-input-area button {
+    padding: 10px 20px; border: none; border-radius: 24px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff; font-size: 14px; cursor: pointer; white-space: nowrap;
+  }
+  .chat-input-area button:hover { opacity: 0.9; }
+  .chat-input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── History Modal ── */
+  .history-list { max-height: 400px; overflow-y: auto; }
+  .history-item {
+    padding: 14px 16px; border: 1px solid #f0f0f0; border-radius: 8px;
+    margin-bottom: 8px; cursor: pointer; transition: background 0.2s;
+  }
+  .history-item:hover { background: #fafafa; }
+  .history-item .hi-time { font-size: 12px; color: #999; margin-bottom: 4px; }
+  .history-item .hi-preview {
+    font-size: 14px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .history-item .hi-meta { font-size: 12px; color: #999; margin-top: 4px; }
+
+  /* ── History Detail Modal ── */
+  .history-detail-msg { margin-bottom: 12px; }
+  .history-detail-msg .hdm-role {
+    font-size: 12px; color: #999; margin-bottom: 2px;
+  }
+  .history-detail-msg .hdm-content {
+    padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.6;
+    background: #f0f2f5; color: #1a1a2e;
+  }
+  .history-detail-msg.hdm-user .hdm-content {
+    background: #667eea; color: #fff;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .sidebar { width: 60px; }
+    .sidebar-brand { font-size: 0; padding: 16px; }
+    .nav-item { justify-content: center; padding: 14px 0; }
+    .nav-item span:not(.icon) { display: none; }
+    .chat-panel { width: 90vw; right: 5vw; bottom: 90px; }
+    .chat-fab { right: 16px; bottom: 24px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-brand">Sky AI 管理后台</div>
+  <nav class="sidebar-nav">
+    <div class="nav-item" data-page="orders">
+      <span class="icon">📦</span> 订单管理
+    </div>
+    <div class="nav-item active" data-page="purchase">
+      <span class="icon">📋</span> 采购管理
+    </div>
+    <div class="nav-item" data-page="products">
+      <span class="icon">🏷️</span> 商品管理
+    </div>
+  </nav>
+</div>
+
+<div class="main">
+  <div class="header">
+    <h2 id="pageTitle">采购管理</h2>
+    <div class="header-actions">
+      <a href="/" style="color:#666;text-decoration:none;font-size:14px;">← 返回聊天</a>
+    </div>
+  </div>
+  <div class="content" id="pageContent">
+    <!-- 采购管理 -->
+    <div id="purchasePage">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <button class="btn btn-primary" onclick="openCreateModal()">＋ 新建采购单</button>
+          <select class="filter-select" id="statusFilter" onchange="loadOrders()">
+            <option value="">全部状态</option>
+            <option value="PENDING">待审核</option>
+            <option value="APPROVED">已通过</option>
+            <option value="RECEIVED">已收货</option>
+            <option value="CANCELLED">已取消</option>
+          </select>
+        </div>
+        <span id="orderCount" style="font-size:13px;color:#999;"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:60px;">ID</th>
+              <th>商品明细</th>
+              <th style="width:100px;">总金额</th>
+              <th style="width:80px;">状态</th>
+              <th style="width:150px;">创建时间</th>
+              <th style="width:180px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="orderTableBody"></tbody>
+        </table>
+        <div class="empty" id="emptyHint">暂无采购单</div>
+      </div>
+    </div>
+
+    <!-- 占位页 -->
+    <div id="placeholderPage" style="display:none;">
+      <div class="empty" style="padding:80px 0;font-size:16px;">功能开发中，敬请期待...</div>
+    </div>
+  </div>
+</div>
+
+<!-- 新建/编辑 Modal -->
+<div class="modal-overlay" id="createModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>新建采购单</h3>
+      <button class="modal-close" onclick="closeCreateModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>采购商品</label>
+        <div class="item-header">
+          <span>商品名称</span>
+          <span>数量</span>
+          <span>单价</span>
+          <span>小计</span>
+          <span></span>
+        </div>
+        <div id="itemList"></div>
+        <button class="btn btn-default btn-sm" onclick="addItemRow()" style="margin-top:4px;">＋ 添加商品</button>
+      </div>
+      <div class="form-group">
+        <label>备注</label>
+        <textarea class="form-control" id="poNotes" placeholder="备注信息（可选）"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-default" onclick="closeCreateModal()">取消</button>
+      <button class="btn btn-primary" onclick="submitPurchaseOrder()">确认创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 详情 Modal -->
+<div class="modal-overlay" id="detailModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>采购单详情</h3>
+      <button class="modal-close" onclick="closeDetailModal()">✕</button>
+    </div>
+    <div class="modal-body" id="detailBody"></div>
+    <div class="modal-footer" id="detailFooter"></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- ── AI 聊天浮动按钮 ── -->
+<button class="chat-fab" id="chatFab" onclick="toggleChat()" title="AI 商家助手">🤖</button>
+
+<!-- ── AI 聊天面板 ── -->
+<div class="chat-panel" id="chatPanel">
+  <div class="chat-panel-header">
+    <h3>🤖 AI 商家助手</h3>
+    <div class="chat-panel-header-actions">
+      <button class="btn-icon" onclick="openHistoryModal()" title="历史会话">📋</button>
+      <button class="btn-icon" onclick="toggleChat()" title="关闭">✕</button>
+    </div>
+  </div>
+  <div class="chat-messages" id="chatMessages"></div>
+  <div class="chat-input-area">
+    <input type="text" id="chatInput" placeholder="输入你的问题..." autofocus>
+    <button id="chatSendBtn" onclick="sendChatMessage()">发送</button>
+  </div>
+</div>
+
+<!-- ── 历史会话 Modal ── -->
+<div class="modal-overlay" id="historyModal">
+  <div class="modal" style="width:520px;">
+    <div class="modal-header">
+      <h3>📋 历史会话</h3>
+      <button class="modal-close" onclick="closeHistoryModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="historyList" class="history-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-default" onclick="closeHistoryModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 会话详情 Modal ── -->
+<div class="modal-overlay" id="historyDetailModal">
+  <div class="modal" style="width:600px;">
+    <div class="modal-header">
+      <h3>💬 会话详情</h3>
+      <button class="modal-close" onclick="closeHistoryDetailModal()">✕</button>
+    </div>
+    <div class="modal-body" id="historyDetailBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-default" onclick="closeHistoryDetailModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/api/purchase-orders';
+const CHAT_API = 'http://localhost:8100/agent/chat/stream';
+const SESSION_API = 'http://localhost:8100/agent/sessions';
+
+const STATUS_LABELS = { PENDING: '待审核', APPROVED: '已通过', RECEIVED: '已收货', CANCELLED: '已取消' };
+const ROLE = 'admin';
+
+// ── Session ID 持久化 ──
+function getSessionId() {
+  let sid = localStorage.getItem('admin_session_id');
+  if (!sid) {
+    sid = 'admin-' + Date.now();
+    localStorage.setItem('admin_session_id', sid);
+  }
+  return sid;
+}
+
+function newSession() {
+  const sid = 'admin-' + Date.now();
+  localStorage.setItem('admin_session_id', sid);
+  return sid;
+}
+
+// ── Toast ──
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast ' + type; t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 3000);
+}
+
+async function api(method, url, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API_BASE + url, opts);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.detail || '请求失败');
+  if (json.code !== 1) throw new Error(json.detail || '请求失败');
+  return json.data;
+}
+
+// ── 菜单切换 ──
+document.querySelectorAll('.nav-item').forEach(el => {
+  el.addEventListener('click', function() {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    this.classList.add('active');
+    const page = this.dataset.page;
+    if (page === 'purchase') {
+      document.getElementById('purchasePage').style.display = '';
+      document.getElementById('placeholderPage').style.display = 'none';
+      document.getElementById('pageTitle').textContent = '采购管理';
+      loadOrders();
+    } else {
+      document.getElementById('purchasePage').style.display = 'none';
+      document.getElementById('placeholderPage').style.display = '';
+      document.getElementById('pageTitle').textContent = page === 'orders' ? '订单管理' : '商品管理';
+    }
+  });
+});
+
+// ── 加载列表 ──
+async function loadOrders() {
+  const status = document.getElementById('statusFilter').value;
+  const params = status ? '?status=' + status : '';
+  try {
+    const data = await api('GET', params);
+    const tbody = document.getElementById('orderTableBody');
+    const empty = document.getElementById('emptyHint');
+    document.getElementById('orderCount').textContent = '共 ' + data.length + ' 条';
+
+    if (!data.length) {
+      tbody.innerHTML = ''; empty.style.display = '';
+      return;
+    }
+    empty.style.display = 'none';
+    tbody.innerHTML = data.map(o => {
+      const itemSummary = o.items.slice(0, 2).map(i => i.productName).join('、');
+      const more = o.items.length > 2 ? '等' + o.items.length + '种' : '';
+      const statusLabel = STATUS_LABELS[o.status] || o.status;
+      return `<tr>
+        <td>${o.orderId}</td>
+        <td>${itemSummary}${more}</td>
+        <td class="text-right">¥${o.totalAmount.toFixed(2)}</td>
+        <td><span class="status-tag status-${o.status}">${statusLabel}</span></td>
+        <td>${o.createTime}</td>
+        <td>
+          <button class="btn btn-default btn-sm" onclick="viewOrder(${o.orderId})">详情</button>
+          ${o.status === 'PENDING' ? `<button class="btn btn-success btn-sm" onclick="updateStatus(${o.orderId},'APPROVED')">通过</button>
+          <button class="btn btn-danger btn-sm" onclick="updateStatus(${o.orderId},'CANCELLED')">取消</button>` : ''}
+          ${o.status === 'APPROVED' ? `<button class="btn btn-primary btn-sm" onclick="updateStatus(${o.orderId},'RECEIVED')">收货</button>
+          <button class="btn btn-danger btn-sm" onclick="updateStatus(${o.orderId},'CANCELLED')">取消</button>` : ''}
+          ${o.status === 'RECEIVED' || o.status === 'CANCELLED' ? `<button class="btn btn-danger btn-sm" onclick="deleteOrder(${o.orderId})">删除</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    showToast('加载失败: ' + e.message, 'error');
+  }
+}
+
+async function updateStatus(id, status) {
+  try {
+    await api('PUT', '/' + id + '/status', { status });
+    showToast('状态已更新为 ' + (STATUS_LABELS[status] || status), 'success');
+    loadOrders();
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+async function deleteOrder(id) {
+  if (!confirm('确定删除该采购单？')) return;
+  try {
+    await api('DELETE', '/' + id);
+    showToast('删除成功', 'success');
+    loadOrders();
+  } catch (e) {
+    showToast('删除失败: ' + e.message, 'error');
+  }
+}
+
+// ── 详情 ──
+async function viewOrder(id) {
+  try {
+    const o = await api('GET', '/' + id);
+    const statusLabel = STATUS_LABELS[o.status] || o.status;
+    const itemsHtml = o.items.map(i =>
+      `<tr><td>${i.productName}</td><td class="text-right">${i.quantity}</td><td class="text-right">¥${i.unitPrice.toFixed(2)}</td><td class="text-right">¥${i.subtotal.toFixed(2)}</td></tr>`
+    ).join('');
+    document.getElementById('detailBody').innerHTML = `
+      <div style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:4px;">
+          <span>采购单 #${o.orderId}</span>
+          <span class="status-tag status-${o.status}">${statusLabel}</span>
+        </div>
+        <div style="font-size:13px;color:#999;">创建时间: ${o.createTime}</div>
+      </div>
+      <table class="detail-items"><thead><tr><th>商品</th><th class="text-right">数量</th><th class="text-right">单价</th><th class="text-right">小计</th></tr></thead>
+      <tbody>${itemsHtml}</tbody>
+      <tfoot><tr><td colspan="3" class="text-right" style="font-weight:600;">合计</td><td class="text-right" style="font-weight:600;color:#ff4d4f;">¥${o.totalAmount.toFixed(2)}</td></tr></tfoot></table>
+      ${o.notes ? '<div style="margin-top:12px;padding:8px 12px;background:#fafafa;border-radius:4px;font-size:13px;color:#666;"><strong>备注:</strong> ' + o.notes + '</div>' : ''}
+    `;
+    document.getElementById('detailFooter').innerHTML = `
+      <button class="btn btn-default" onclick="closeDetailModal()">关闭</button>
+      ${o.status === 'PENDING' ? `<button class="btn btn-success" onclick="detailAction(${o.orderId},'APPROVED')">通过</button>
+      <button class="btn btn-danger" onclick="detailAction(${o.orderId},'CANCELLED')">取消</button>` : ''}
+      ${o.status === 'APPROVED' ? `<button class="btn btn-primary" onclick="detailAction(${o.orderId},'RECEIVED')">收货</button>
+      <button class="btn btn-danger" onclick="detailAction(${o.orderId},'CANCELLED')">取消</button>` : ''}
+      ${o.status === 'RECEIVED' || o.status === 'CANCELLED' ? `<button class="btn btn-danger" onclick="detailDelete(${o.orderId})">删除</button>` : ''}
+    `;
+    document.getElementById('detailModal').classList.add('show');
+  } catch (e) {
+    showToast('加载详情失败: ' + e.message, 'error');
+  }
+}
+
+function closeDetailModal() { document.getElementById('detailModal').classList.remove('show'); }
+
+async function detailAction(id, status) {
+  try {
+    await api('PUT', '/' + id + '/status', { status });
+    showToast('操作成功', 'success');
+    closeDetailModal();
+    loadOrders();
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+async function detailDelete(id) {
+  if (!confirm('确定删除该采购单？')) return;
+  try {
+    await api('DELETE', '/' + id);
+    showToast('删除成功', 'success');
+    closeDetailModal();
+    loadOrders();
+  } catch (e) {
+    showToast('删除失败: ' + e.message, 'error');
+  }
+}
+
+// ── 新建 Modal ──
+let itemIndex = 0;
+
+function openCreateModal() {
+  itemIndex = 0;
+  document.getElementById('itemList').innerHTML = '';
+  document.getElementById('poNotes').value = '';
+  addItemRow();
+  document.getElementById('createModal').classList.add('show');
+}
+
+function closeCreateModal() { document.getElementById('createModal').classList.remove('show'); }
+
+function addItemRow() {
+  const idx = itemIndex++;
+  const div = document.createElement('div');
+  div.className = 'item-row';
+  div.id = 'itemRow_' + idx;
+  div.innerHTML = `
+    <input type="text" id="itemName_${idx}" placeholder="商品名称" style="min-width:0;">
+    <input type="number" id="itemQty_${idx}" placeholder="数量" min="1" value="1" style="width:70px;">
+    <input type="number" id="itemPrice_${idx}" placeholder="单价" min="0" step="0.01" value="0" style="width:90px;">
+    <span id="itemSubtotal_${idx}" style="font-size:13px;color:#666;">¥0.00</span>
+    <button class="btn-remove" onclick="removeItemRow(${idx})">✕</button>
+  `;
+  div.querySelectorAll('input').forEach(inp => {
+    inp.addEventListener('input', () => calcSubtotal(idx));
+  });
+  document.getElementById('itemList').appendChild(div);
+}
+
+function removeItemRow(idx) {
+  const el = document.getElementById('itemRow_' + idx);
+  if (el) el.remove();
+}
+
+function calcSubtotal(idx) {
+  const qty = parseFloat(document.getElementById('itemQty_' + idx).value) || 0;
+  const price = parseFloat(document.getElementById('itemPrice_' + idx).value) || 0;
+  document.getElementById('itemSubtotal_' + idx).textContent = '¥' + (qty * price).toFixed(2);
+}
+
+function getItemRows() {
+  const items = [];
+  document.querySelectorAll('.item-row').forEach(row => {
+    const idMatch = row.id.match(/_(\d+)$/);
+    if (!idMatch) return;
+    const idx = parseInt(idMatch[1]);
+    const name = document.getElementById('itemName_' + idx).value.trim();
+    const qty = parseInt(document.getElementById('itemQty_' + idx).value) || 0;
+    const price = parseFloat(document.getElementById('itemPrice_' + idx).value) || 0;
+    if (!name || qty <= 0) return;
+    items.push({ productId: 0, productName: name, quantity: qty, unitPrice: price });
+  });
+  return items;
+}
+
+async function submitPurchaseOrder() {
+  const items = getItemRows();
+  if (!items.length) { showToast('请至少添加一个有效商品', 'error'); return; }
+  const notes = document.getElementById('poNotes').value.trim();
+  try {
+    await api('POST', '', { items, notes });
+    showToast('采购单创建成功', 'success');
+    closeCreateModal();
+    loadOrders();
+  } catch (e) {
+    showToast('创建失败: ' + e.message, 'error');
+  }
+}
+
+// ── AI 聊天面板 ──
+function toggleChat() {
+  const panel = document.getElementById('chatPanel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) {
+    document.getElementById('chatInput').focus();
+    loadChatHistory();
+  }
+}
+
+async function loadChatHistory() {
+  const sessionId = getSessionId();
+  try {
+    const res = await fetch(`${SESSION_API}/${sessionId}/messages`);
+    const json = await res.json();
+    if (json.code === 1 && json.data.length > 0) {
+      renderMessages(json.data);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function renderMessages(messages) {
+  const container = document.getElementById('chatMessages');
+  container.innerHTML = '';
+  for (const m of messages) {
+    if (m.type === 'human' || m.type === 'ai') {
+      const role = m.type === 'human' ? 'user' : 'bot';
+      const content = m.data?.content || '';
+      if (!content) continue;
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      div.textContent = content;
+      const time = document.createElement('span');
+      time.className = 'time';
+      time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      div.appendChild(time);
+      container.appendChild(div);
+    }
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+function addChatMessage(text, role, showTime = true) {
+  const container = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  if (text) div.textContent = text;
+  if (showTime) {
+    const time = document.createElement('span');
+    time.className = 'time';
+    time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    div.appendChild(time);
+  }
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+function showTyping() {
+  const container = document.getElementById('chatMessages');
+  let el = document.getElementById('chatTyping');
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'msg bot typing';
+  el.textContent = '思考中...';
+  el.id = 'chatTyping';
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+  return el;
+}
+
+function removeTyping() {
+  const el = document.getElementById('chatTyping');
+  if (el) el.remove();
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  document.getElementById('chatSendBtn').disabled = true;
+
+  addChatMessage(text, 'user');
+  showTyping();
+
+  try {
+    const res = await fetch(CHAT_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, session_id: getSessionId(), role: ROLE })
+    });
+    removeTyping();
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let botDiv = addChatMessage('', 'bot', false);
+    let buffer = '';
+    outer:
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') break outer;
+          try {
+            const parsed = JSON.parse(data);
+            botDiv.textContent += parsed.token;
+            document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
+          } catch (e) { /* skip partial JSON */ }
+        }
+      }
+    }
+    const time = document.createElement('span');
+    time.className = 'time';
+    time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    botDiv.appendChild(time);
+  } catch (err) {
+    removeTyping();
+    addChatMessage('连接失败，请确认 Python 服务是否运行', 'bot');
+  } finally {
+    document.getElementById('chatSendBtn').disabled = false;
+    document.getElementById('chatInput').focus();
+  }
+}
+
+document.getElementById('chatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendChatMessage();
+});
+
+// ── 历史会话 ──
+async function openHistoryModal() {
+  document.getElementById('historyModal').classList.add('show');
+  document.getElementById('historyList').innerHTML = '<div style="text-align:center;padding:24px;color:#999;">加载中...</div>';
+  try {
+    const res = await fetch(`${SESSION_API}?role=${ROLE}&limit=50`);
+    const json = await res.json();
+    if (json.code !== 1) throw new Error(json.msg || '加载失败');
+    const sessions = json.data;
+    const container = document.getElementById('historyList');
+    if (!sessions.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:#999;">暂无历史会话</div>';
+      return;
+    }
+    container.innerHTML = sessions.map(s => `
+      <div class="history-item" onclick="openHistoryDetail('${s.session_id}')">
+        <div class="hi-time">${formatTime(s.created_at)}</div>
+        <div class="hi-preview">${s.preview || '(空)'}</div>
+        <div class="hi-meta">共 ${s.message_count} 条消息</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('historyList').innerHTML = '<div style="text-align:center;padding:24px;color:#ff4d4f;">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function closeHistoryModal() {
+  document.getElementById('historyModal').classList.remove('show');
+}
+
+function formatTime(ts) {
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function openHistoryDetail(sessionId) {
+  closeHistoryModal();
+  document.getElementById('historyDetailModal').classList.add('show');
+  document.getElementById('historyDetailBody').innerHTML = '<div style="text-align:center;padding:24px;color:#999;">加载中...</div>';
+  try {
+    const res = await fetch(`${SESSION_API}/${sessionId}/messages`);
+    const json = await res.json();
+    if (json.code !== 1) throw new Error(json.msg || '加载失败');
+    const messages = json.data;
+    const container = document.getElementById('historyDetailBody');
+    if (!messages.length) {
+      container.innerHTML = '<div style="text-align:center;padding:24px;color:#999;">暂无消息</div>';
+      return;
+    }
+    container.innerHTML = messages.map(m => {
+      const role = m.type === 'human' ? '用户' : (m.type === 'ai' ? 'AI' : m.type);
+      const content = m.data?.content || '';
+      if (!content) return '';
+      const cls = m.type === 'human' ? 'hdm-user' : '';
+      return `
+        <div class="history-detail-msg ${cls}">
+          <div class="hdm-role">${role}</div>
+          <div class="hdm-content">${escapeHtml(content)}</div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    document.getElementById('historyDetailBody').innerHTML = '<div style="text-align:center;padding:24px;color:#ff4d4f;">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function closeHistoryDetailModal() {
+  document.getElementById('historyDetailModal').classList.remove('show');
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ── 初始化 ──
+loadOrders();
+</script>
+</body>
+</html>
