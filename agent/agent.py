@@ -48,40 +48,47 @@ ADMIN_SYSTEM_PROMPT = """你是一个商家智能助手，可以分析销售数�
 admin_llm_with_tools = llm.bind_tools(ADMIN_TOOLS)
 
 
-def admin_call_model(state: MessagesState) -> dict:
-    messages = [SystemMessage(content=ADMIN_SYSTEM_PROMPT), *state["messages"]]
-    response = admin_llm_with_tools.invoke(messages)
-    return {"messages": [response]}
-
-
 def should_continue(state: MessagesState) -> Literal["tools", "__end__"]:
     last = state["messages"][-1]
     return "tools" if isinstance(last, AIMessage) and last.tool_calls else END
 
 
-async def admin_execute_tools(state: MessagesState) -> dict:
-    last: AIMessage = state["messages"][-1]
-    tool_messages = []
-    for tc in last.tool_calls:
-        fn = ADMIN_TOOL_MAP.get(tc["name"])
-        if fn:
-            try:
-                result = await fn(**tc.get("args", {})) if asyncio.iscoroutinefunction(fn) else fn(**tc.get("args", {}))
-            except Exception as e:
-                result = {"error": f"工具执行失败: {str(e)}"}
-            tool_messages.append(ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tc["id"]))
-        else:
-            tool_messages.append(ToolMessage(content=f"未知工具: {tc['name']}", tool_call_id=tc["id"]))
-    return {"messages": tool_messages}
+def _make_execute_tools(tool_map):
+    """根据工具映射生成 X 工具执行节点，供商家/用户两个 workflow 复用"""
+    async def execute_tools(state: MessagesState) -> dict:
+        last: AIMessage = state["messages"][-1]
+        tool_messages = []
+        for tc in last.tool_calls:
+            fn = tool_map.get(tc["name"])
+            if fn:
+                try:
+                    result = await fn(**tc.get("args", {})) if asyncio.iscoroutinefunction(fn) else fn(**tc.get("args", {}))
+                except Exception as e:
+                    result = {"error": f"工具执行失败: {str(e)}"}
+                tool_messages.append(ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tc["id"]))
+            else:
+                tool_messages.append(ToolMessage(content=f"未知工具: {tc['name']}", tool_call_id=tc["id"]))
+        return {"messages": tool_messages}
+    return execute_tools
 
 
-admin_workflow = StateGraph(MessagesState)
-admin_workflow.add_node("agent", admin_call_model)
-admin_workflow.add_node("tools", admin_execute_tools)
-admin_workflow.set_entry_point("agent")
-admin_workflow.add_conditional_edges("agent", should_continue)
-admin_workflow.add_edge("tools", "agent")
-admin_app = admin_workflow.compile()
+def _build_workflow(llm_with_tools, system_prompt, tool_map):
+    """根据工具绑定LLM、系统提示词与工具映射构建统一的 Agent workflow"""
+    def call_model(state: MessagesState) -> dict:
+        messages = [SystemMessage(content=system_prompt), *state["messages"]]
+        response = llm_with_tools.invoke(messages)
+        return {"messages": [response]}
+
+    workflow = StateGraph(MessagesState)
+    workflow.add_node("agent", call_model)
+    workflow.add_node("tools", _make_execute_tools(tool_map))
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges("agent", should_continue)
+    workflow.add_edge("tools", "agent")
+    return workflow.compile()
+
+
+admin_app = _build_workflow(admin_llm_with_tools, ADMIN_SYSTEM_PROMPT, ADMIN_TOOL_MAP)
 
 
 # ─── 用户 AI ───────────────────────────────────────────
@@ -122,35 +129,7 @@ USER_SYSTEM_PROMPT = """你是一个微信商城的智能客服助手，帮助�
 user_llm_with_tools = llm.bind_tools(USER_TOOLS)
 
 
-def user_call_model(state: MessagesState) -> dict:
-    messages = [SystemMessage(content=USER_SYSTEM_PROMPT), *state["messages"]]
-    response = user_llm_with_tools.invoke(messages)
-    return {"messages": [response]}
-
-
-async def user_execute_tools(state: MessagesState) -> dict:
-    last: AIMessage = state["messages"][-1]
-    tool_messages = []
-    for tc in last.tool_calls:
-        fn = USER_TOOL_MAP.get(tc["name"])
-        if fn:
-            try:
-                result = await fn(**tc.get("args", {})) if asyncio.iscoroutinefunction(fn) else fn(**tc.get("args", {}))
-            except Exception as e:
-                result = {"error": f"工具执行失败: {str(e)}"}
-            tool_messages.append(ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tc["id"]))
-        else:
-            tool_messages.append(ToolMessage(content=f"未知工具: {tc['name']}", tool_call_id=tc["id"]))
-    return {"messages": tool_messages}
-
-
-user_workflow = StateGraph(MessagesState)
-user_workflow.add_node("agent", user_call_model)
-user_workflow.add_node("tools", user_execute_tools)
-user_workflow.set_entry_point("agent")
-user_workflow.add_conditional_edges("agent", should_continue)
-user_workflow.add_edge("tools", "agent")
-user_app = user_workflow.compile()
+user_app = _build_workflow(user_llm_with_tools, USER_SYSTEM_PROMPT, USER_TOOL_MAP)
 
 
 # ─── 路由 ──────────────────────────────────────────────
@@ -159,7 +138,38 @@ def _get_app(role: str):
     return admin_app if role == "admin" else user_app
 
 
-async def run_agent(user_message: str, role: str = "user", user_id: str = "", session_id: str = "", token: str = "") -> str:
+def _extract_order_data(messages) -> dict | None:
+    """扫描消息历史，返回 create_user_order 成功调用产生的订单数据（结构化，非字符串拼接）"""
+    for i, m in enumerate(messages):
+        if isinstance(m, AIMessage) and m.tool_calls:
+            for tc in m.tool_calls:
+                if tc.get("name") == "create_user_order":
+                    target_id = tc["id"]
+                    for tm in messages[i + 1:]:
+                        if isinstance(tm, ToolMessage) and tm.tool_call_id == target_id:
+                            try:
+                                data = json.loads(tm.content)
+                                if isinstance(data, dict) and data.get("code") == 1 and data.get("data"):
+                                    return data["data"]
+                            except Exception:
+                                pass
+                            return None
+                    return None
+    return None
+
+
+async def _persist(session_id: str, role: str, messages) -> None:
+    """统一会话记忆持久化：保存全部消息（含工具调用历史）并注册会话"""
+    if not session_id or not messages:
+        return
+    try:
+        await memory.save_messages(session_id, messages)
+        await memory.register_session(session_id, role)
+    except Exception as e:
+        logger.error(f"保存记忆失败: {e}")
+
+
+async def run_agent(user_message: str, role: str = "user", user_id: str = "", session_id: str = "", token: str = "") -> tuple[str, dict | None]:
     app = _get_app(role)
 
     if role == "user":
@@ -173,33 +183,13 @@ async def run_agent(user_message: str, role: str = "user", user_id: str = "", se
     inputs = {"messages": history + msgs}
     result = await app.ainvoke(inputs)
 
-    await memory.save_messages(session_id, result["messages"])
-    await memory.register_session(session_id, role)
+    await _persist(session_id, role, result["messages"])
+
+    order_data = _extract_order_data(result["messages"])
     for msg in reversed(result["messages"]):
         if isinstance(msg, AIMessage) and msg.content:
-            reply = msg.content
-
-            # 扫描消息历史，检测是否有 create_user_order 成功调用 → 注入 __ORDER_DATA__
-            for i, m in enumerate(result["messages"]):
-                if isinstance(m, AIMessage) and m.tool_calls:
-                    for tc in m.tool_calls:
-                        if tc.get("name") == "create_user_order":
-                            target_id = tc["id"]
-                            for j in range(i + 1, len(result["messages"])):
-                                tm = result["messages"][j]
-                                if isinstance(tm, ToolMessage) and tm.tool_call_id == target_id:
-                                    try:
-                                        data = json.loads(tm.content)
-                                        if isinstance(data, dict) and data.get("code") == 1 and data.get("data"):
-                                            order = data["data"]
-                                            marker = "__ORDER_DATA__:" + json.dumps(order, ensure_ascii=False)
-                                            reply += "\n\n" + marker
-                                    except Exception:
-                                        pass
-                                    break
-                            break
-            return reply
-    return "抱歉，我没有生成有效的回复。"
+            return msg.content, order_data
+    return "抱歉，我没有生成有效的回复。", order_data
 
 
 async def run_agent_stream(user_message: str, role: str = "user", session_id: str = "", token: str = "") -> AsyncGenerator[str, None]:
@@ -212,7 +202,7 @@ async def run_agent_stream(user_message: str, role: str = "user", session_id: st
     inputs = {"messages": history + [HumanMessage(content=user_message)]}
 
     collected = []
-    saved = False
+    state_candidates = []
 
     try:
         async for event in app.astream_events(inputs, version="v1"):
@@ -222,15 +212,12 @@ async def run_agent_stream(user_message: str, role: str = "user", session_id: st
                 if content:
                     collected.append(content)
                     yield content
+            elif kind == "on_chain_end":
+                output = event["data"].get("output")
+                if isinstance(output, dict) and isinstance(output.get("messages"), list):
+                    state_candidates.append(output["messages"])
     finally:
-        if not saved and session_id and collected:
-            full_msgs = history + [
-                HumanMessage(content=user_message),
-                AIMessage(content="".join(collected)),
-            ]
-            try:
-                await memory.save_messages(session_id, full_msgs)
-                await memory.register_session(session_id, role)
-                saved = True
-            except Exception as e:
-                logger.error(f"保存记忆失败: {e}")
+        # 取完整消息状态（含工具调用历史），与 run_agent 的记忆策略保持一致
+        final_msgs = max(state_candidates, key=len, default=None)
+        if final_msgs and session_id:
+            await _persist(session_id, role, final_msgs)

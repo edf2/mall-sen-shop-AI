@@ -12,3 +12,4 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     session_id: str
+    order_data: dict | None = None

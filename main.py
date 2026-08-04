@@ -90,8 +90,8 @@ def _validate_message(message: str) -> None:
 async def chat(request: ChatRequest):
     logger.info(f"收到请求: session={request.session_id}, role={request.role}, message={request.message}, user_id={request.user_id}")
     _validate_message(request.message)
-    reply = await run_agent(request.message, request.role, user_id=request.user_id or "", session_id=request.session_id, token=request.token)
-    return ChatResponse(reply=reply, session_id=request.session_id)
+    reply, order_data = await run_agent(request.message, request.role, user_id=request.user_id or "", session_id=request.session_id, token=request.token)
+    return ChatResponse(reply=reply, session_id=request.session_id, order_data=order_data)
 
 
 @app.post("/agent/chat/stream")
