@@ -111,6 +111,129 @@
     background: #f0f2f5; color: #1a1a2e;
   }
   .history-detail-msg.hdm-user .hdm-content { background: #667eea; color: #fff; }
+
+  /* ── 订单卡片样式 ── */
+  .order-card {
+    background: #fff;
+    border: 1px solid #e8e8e8;
+    border-radius: 12px;
+    padding: 16px;
+    margin-top: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    max-width: 320px;
+  }
+  .order-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .order-card-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #333;
+  }
+  .order-card-status {
+    font-size: 12px;
+    color: #fa8c16;
+    background: #fff7e6;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .order-card-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    font-size: 13px;
+    color: #666;
+  }
+  .order-card-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 12px;
+  }
+  .order-card-item-qty {
+    color: #999;
+    margin-right: 12px;
+  }
+  .order-card-item-price {
+    color: #333;
+    font-weight: 500;
+  }
+  .order-card-divider {
+    height: 1px;
+    background: #f0f0f0;
+    margin: 8px 0;
+  }
+  .order-card-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 12px;
+    color: #999;
+  }
+  .order-card-row.total {
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed #e8e8e8;
+  }
+  .order-card-row.total .order-card-value {
+    color: #ff4d4f;
+    font-size: 16px;
+  }
+  .order-card-footer {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+  }
+  .order-card-btn {
+    flex: 1;
+    padding: 10px 0;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .order-card-btn:hover {
+    opacity: 0.9;
+  }
+  .order-card-btn.primary {
+    background: linear-gradient(135deg, #ff4d4f, #ff7875);
+    color: #fff;
+  }
+  .order-card-btn.secondary {
+    background: #f5f5f5;
+    color: #666;
+    border: 1px solid #e8e8e8;
+  }
+  .order-card-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .order-card-timer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: #fa8c16;
+  }
+  .order-card-timer svg {
+    width: 12px;
+    height: 12px;
+  }
 </style>
 </head>
 <body>
@@ -171,6 +294,9 @@
 <script>
 const API_URL = 'http://localhost:8100/agent/chat/stream';
 const SESSION_API = 'http://localhost:8100/agent/sessions';
+// 调试用共享密钥：与后端 .env 的 AGENT_API_KEY、Java 端 agent.service.api-key 一致。
+// 仅限本机调试页使用（服务只监听 127.0.0.1）；真实流量由 Java 后端注入，不在生产前端硬编码。
+const AGENT_KEY = 'e6133bc4f53de7c737257e02a441df059e75002ae0c3e62dbf8db837b7d3d63a';
 
 // ── Session ID 持久化 ──
 function getSessionId() {
@@ -213,6 +339,135 @@ function addMessage(text, role, showTime = true) {
   return div;
 }
 
+function addOrderCard(orderData) {
+  const card = document.createElement('div');
+  card.className = 'order-card';
+
+  // 解析订单数据
+  const orderId = orderData.orderId || '';
+  const orderNumber = orderData.orderNumber || '';
+  const amount = orderData.amount || 0;
+  const items = orderData.items || [];
+  const consignee = orderData.consignee || '';
+  const phone = orderData.phone || '';
+  const address = orderData.addressDetail || orderData.address || '';
+
+  // 格式化金额（自动判断：如果金额大于1000则认为是分，否则是元）
+  const formatAmount = (val) => {
+    if (!val) return '0.00';
+    // 如果金额是整数且大于100，可能是分为单位
+    if (Number.isInteger(val) && val > 1000) {
+      return (val / 100).toFixed(2);
+    }
+    return Number(val).toFixed(2);
+  };
+
+  // 计算支付剩余时间（15分钟）
+  const now = new Date();
+  const expireTime = new Date(now.getTime() + 15 * 60 * 1000);
+  const timerId = 'timer-' + orderId;
+
+  // 渲染商品列表
+  let itemsHtml = '';
+  if (items.length > 0) {
+    itemsHtml = items.map(item => `
+      <div class="order-card-item">
+        <span class="order-card-item-name">${escapeHtml(item.name || item.productName || '')}</span>
+        <span class="order-card-item-qty">x${item.quantity || item.num || 1}</span>
+        <span class="order-card-item-price">¥${formatAmount(item.price || item.amount || 0)}</span>
+      </div>
+    `).join('');
+  } else {
+    itemsHtml = '<div class="order-card-item" style="color:#999;">商品信息加载中...</div>';
+  }
+
+  // 渲染卡片内容
+  card.innerHTML = `
+    <div class="order-card-header">
+      <span class="order-card-title">订单创建成功</span>
+      <span class="order-card-status">待支付</span>
+    </div>
+    <div class="order-card-item" style="color:#999;font-size:12px;">
+      <span>订单号: ${orderNumber || orderId}</span>
+    </div>
+    <div class="order-card-divider"></div>
+    ${itemsHtml}
+    <div class="order-card-divider"></div>
+    ${consignee ? `
+    <div class="order-card-row">
+      <span>收货人</span>
+      <span>${escapeHtml(consignee)} ${escapeHtml(phone)}</span>
+    </div>
+    ` : ''}
+    ${address ? `
+    <div class="order-card-row">
+      <span>收货地址</span>
+      <span style="max-width:200px;text-align:right;">${escapeHtml(address)}</span>
+    </div>
+    ` : ''}
+    <div class="order-card-row total">
+      <span>实付金额</span>
+      <span class="order-card-value">¥${formatAmount(amount)}</span>
+    </div>
+    <div class="order-card-timer">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <polyline points="12,6 12,12 16,14"/>
+      </svg>
+      <span id="${timerId}">请在15分钟内完成支付</span>
+    </div>
+    <div class="order-card-footer">
+      <button class="order-card-btn secondary" onclick="viewOrder('${orderId}')">查看详情</button>
+      <button class="order-card-btn primary" id="pay-btn-${orderId}" onclick="payOrder('${orderId}', ${amount})">立即支付</button>
+    </div>
+  `;
+
+  messagesEl.appendChild(card);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  // 启动倒计时
+  startCountdown(timerId, expireTime, 'pay-btn-' + orderId);
+
+  return card;
+}
+
+function startCountdown(timerId, expireTime, btnId) {
+  const timerEl = document.getElementById(timerId);
+  const btnEl = document.getElementById(btnId);
+  if (!timerEl) return;
+
+  const updateTimer = () => {
+    const now = new Date();
+    const diff = expireTime - now;
+    if (diff <= 0) {
+      timerEl.textContent = '订单已超时，即将自动取消';
+      if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = '已超时';
+      }
+      return;
+    }
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    timerEl.textContent = `请在 ${minutes}:${String(seconds).padStart(2, '0')} 内完成支付`;
+  };
+
+  updateTimer();
+  setInterval(updateTimer, 1000);
+}
+
+function viewOrder(orderId) {
+  // 跳转到订单详情页（根据实际前端路由调整）
+  alert('订单详情: ' + orderId + '\n（请跳转到订单详情页面）');
+}
+
+function payOrder(orderId, amount) {
+  // 跳转到支付页面（根据实际支付流程调整）
+  const payUrl = `/pay?orderId=${orderId}&amount=${amount}`;
+  alert('正在跳转到支付页面...\n订单号: ' + orderId + '\n支付金额: ¥' + (amount / 100).toFixed(2) + '\n（实际项目中请跳转到支付页面）');
+  // window.location.href = payUrl;
+}
+
 function showTyping() {
   const div = document.createElement('div');
   div.className = 'message bot typing';
@@ -230,7 +485,9 @@ function removeTyping() {
 async function loadChatHistory() {
   const sessionId = getSessionId();
   try {
-    const res = await fetch(`${SESSION_API}/${sessionId}/messages`);
+    const res = await fetch(`${SESSION_API}/${sessionId}/messages`, {
+      headers: { 'x-agent-key': AGENT_KEY }
+    });
     const json = await res.json();
     if (json.code === 1 && json.data.length > 0) {
       messagesEl.innerHTML = '';
@@ -256,7 +513,7 @@ async function sendMessage() {
   try {
     const res = await fetch(API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-agent-key': AGENT_KEY },
       body: JSON.stringify({ message: text, session_id: getSessionId() })
     });
     removeTyping();
@@ -278,8 +535,14 @@ async function sendMessage() {
           if (data === '[DONE]') break outer;
           try {
             const parsed = JSON.parse(data);
-            botDiv.textContent += parsed.token;
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            // 检查是否是订单数据
+            if (parsed.order_data) {
+              // 渲染订单卡片
+              addOrderCard(parsed.order_data);
+            } else if (parsed.token) {
+              botDiv.textContent += parsed.token;
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
           } catch (e) { /* skip partial JSON */ }
         }
       }
@@ -305,7 +568,9 @@ async function openHistoryModal() {
   document.getElementById('historyModal').classList.add('show');
   document.getElementById('historyList').innerHTML = '<div style="text-align:center;padding:24px;color:#999;">加载中...</div>';
   try {
-    const res = await fetch(`${SESSION_API}?role=user&limit=50`);
+    const res = await fetch(`${SESSION_API}?role=user&limit=50`, {
+      headers: { 'x-agent-key': AGENT_KEY }
+    });
     const json = await res.json();
     if (json.code !== 1) throw new Error(json.msg || '加载失败');
     const sessions = json.data;
@@ -341,7 +606,9 @@ async function openHistoryDetail(sessionId) {
   document.getElementById('historyDetailModal').classList.add('show');
   document.getElementById('historyDetailBody').innerHTML = '<div style="text-align:center;padding:24px;color:#999;">加载中...</div>';
   try {
-    const res = await fetch(`${SESSION_API}/${sessionId}/messages`);
+    const res = await fetch(`${SESSION_API}/${sessionId}/messages`, {
+      headers: { 'x-agent-key': AGENT_KEY }
+    });
     const json = await res.json();
     if (json.code !== 1) throw new Error(json.msg || '加载失败');
     const messages = json.data;

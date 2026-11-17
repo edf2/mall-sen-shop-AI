@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import secrets
 from contextlib import asynccontextmanager
 
@@ -12,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from agent.schemas import ChatRequest, ChatResponse
 from agent.agent import run_agent, run_agent_stream, memory
+from agent.config import AGENT_API_KEY
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,7 +20,19 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Sky Agent Service 启动中...")
+    # 尝试注册到 Nacos（可选，失败不影响启动）
+    try:
+        from agent.nacos_registry import register_to_nacos
+        register_to_nacos()
+    except Exception as e:
+        logger.warning(f"Nacos 注册跳过: {e}")
     yield
+    # 从 Nacos 注销
+    try:
+        from agent.nacos_registry import deregister_from_nacos
+        deregister_from_nacos()
+    except Exception:
+        pass
     logger.info("Sky Agent Service 关闭中...")
 
 
@@ -31,8 +43,8 @@ app = FastAPI(title="Sky Agent Service", version="1.0.0", lifespan=lifespan,
 # AGENT_API_KEY：调用 /agent/** 必须携带请求头 x-agent-key 且与此一致。
 # 安全背景：该服务承载「所有用户会话/对话历史」与对 Java 后端的 AI 数据调用，
 # 若对外暴露且无鉴权，任何人可越权读写他人对话。
-# Java 端 AgentClientConfig 会统一注入该请求头（sky.agent.api-key）。
-AGENT_API_KEY = os.getenv("AGENT_API_KEY", "change-me")
+# Java 端 AgentClientConfig 会统一注入该请求头（agent.service.api-key）。
+# 该密钥由 agent/config.py 统一读取并做 fail-fast（缺失/占位值直接启动失败）。
 
 # 明确受保护的前缀（其余为 public：健康检查、Swagger、聊天页）
 _PROTECTED_PREFIXES = ("/agent/",)
@@ -41,7 +53,9 @@ _PROTECTED_PREFIXES = ("/agent/",)
 @app.middleware("http")
 async def require_api_key(request: Request, call_next):
     if request.url.path.startswith(_PROTECTED_PREFIXES):
-        if not secrets.compare_digest(request.headers.get("x-agent-key", ""), AGENT_API_KEY):
+        received_key = request.headers.get("x-agent-key", "<MISSING>")
+        logger.info("收到 x-agent-key: [%s], 期望: [%s], 匹配: %s", received_key, AGENT_API_KEY, secrets.compare_digest(received_key, AGENT_API_KEY))
+        if not secrets.compare_digest(received_key, AGENT_API_KEY):
             logger.warning("Agent 服务鉴权失败: 401 %s (source=%s)", request.url.path, request.client.host if request.client else "?")
             return JSONResponse(status_code=401, content={"code": 0, "msg": "非法请求：缺少或错误的 x-agent-key"})
     return await call_next(request)
@@ -66,7 +80,8 @@ async def custom_swagger_ui_html():
 @app.get("/", include_in_schema=False)
 async def chat_page():
     with open("static/chat.html", encoding="utf-8") as f:
-        return HTMLResponse(f.read())
+        # no-cache：调试页会频繁改动（如加鉴权头），强制浏览器每次重新拉取，避免旧缓存导致 401 类假故障
+        return HTMLResponse(f.read(), headers={"Cache-Control": "no-cache"})
 
 
 app.add_middleware(
@@ -90,8 +105,8 @@ def _validate_message(message: str) -> None:
 async def chat(request: ChatRequest):
     logger.info(f"收到请求: session={request.session_id}, role={request.role}, message={request.message}, user_id={request.user_id}")
     _validate_message(request.message)
-    reply, order_data = await run_agent(request.message, request.role, user_id=request.user_id or "", session_id=request.session_id, token=request.token)
-    return ChatResponse(reply=reply, session_id=request.session_id, order_data=order_data)
+    reply, order_data, product_data = await run_agent(request.message, request.role, user_id=request.user_id or "", session_id=request.session_id, token=request.token)
+    return ChatResponse(reply=reply, session_id=request.session_id, order_data=order_data, product_data=product_data)
 
 
 @app.post("/agent/chat/stream")
@@ -102,8 +117,18 @@ async def chat_stream(request: ChatRequest):
     async def generate():
         try:
             async for chunk in run_agent_stream(request.message, request.role, session_id=request.session_id, token=request.token):
-                data = json.dumps({"token": chunk, "session_id": request.session_id}, ensure_ascii=False)
-                yield f"data: {data}\n\n"
+                # 检查是否是特殊数据事件
+                if chunk.startswith("\n\n__ORDER_DATA__:"):
+                    order_event = chunk[len("\n\n__ORDER_DATA__:"):]
+                    yield f"data: {order_event}\n\n"
+                elif chunk.startswith("\n\n__PRODUCT_DATA__:"):
+                    product_event = chunk[len("\n\n__PRODUCT_DATA__:"):]
+                    yield f"data: {product_event}\n\n"
+                elif chunk.startswith("\n\n__CLEAN_PRODUCTS_MARKER__"):
+                    yield f"data: {json.dumps({'clean_marker': True}, ensure_ascii=False)}\n\n"
+                else:
+                    data = json.dumps({"token": chunk, "session_id": request.session_id}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"流式输出异常: {e}")

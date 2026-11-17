@@ -13,3 +13,4 @@ class ChatResponse(BaseModel):
     reply: str
     session_id: str
     order_data: dict | None = None
+    product_data: list[dict] | None = None

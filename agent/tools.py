@@ -8,12 +8,14 @@ import httpx
 from datetime import datetime
 from typing import Any
 
+from agent.config import AGENT_API_KEY
+
 JAVA_BACKEND_URL = os.getenv("JAVA_BACKEND_URL", "http://localhost:8080")
-# 与 Java 后端约定的共享密钥（application.yml 的 agent.service.api-key / AGENT_API_KEY）。
-# 商家 AI 调用 Java 的 /admin/business/ai/** 与 /admin/purchase-order/** 时携带 x-agent-key，
+# 共享密钥统一由 agent.config.AGENT_API_KEY 提供（fail-fast，缺失/占位值启动即失败），
+# 与 Java 端 agent.service.api-key 保持一致。
+# 商家工具调用 Java 的 /admin/business/ai/** 与 /admin/purchase-order/** 时携带 x-agent-key，
 # Java 端 JwtTokenAdminInterceptor 对这两类前缀放行该密钥校验。共享密钥无过期时间，
 # 取代此前的静态 ADMIN_JWT_TOKEN（8 天 TTL 过期后整个商家 AI 静默失效且无刷新机制）。
-AGENT_API_KEY = os.getenv("AGENT_API_KEY", "change-me")
 
 # 当前请求的用户 JWT（由 run_agent 在进入 Agent 前按请求注入，任务级隔离）
 _current_user_token: contextvars.ContextVar[str] = contextvars.ContextVar("current_user_token", default="")
@@ -406,7 +408,7 @@ async def get_user_default_address(user_id: str = "") -> dict[str, Any]:
     """
     获取用户的默认收货地址
     调用 Java 后端 API: GET /user/business/ai/address/default
-    返回: {consignee, phone, fullAddress, label}
+    返回: {addressBookId, consignee, phone, fullAddress, label}
     注意：Java 端从用户 JWT 获取 userId，无需（也不应）传 userId
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -416,7 +418,10 @@ async def get_user_default_address(user_id: str = "") -> dict[str, Any]:
                 headers=_get_user_headers()
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            if result.get("code") == 1 and result.get("data"):
+                return result["data"]
+            return {"error": result.get("msg", "获取默认地址失败")}
         except httpx.HTTPError as e:
             return {"error": f"获取默认地址失败: {str(e)}"}
         except Exception as e:
@@ -428,6 +433,7 @@ async def create_user_order(
     address_detail: str,
     consignee: str,
     phone: str,
+    address_book_id: str = "",
     remark: str = "",
     user_id: str = ""
 ) -> dict[str, Any]:
@@ -445,6 +451,7 @@ async def create_user_order(
                 "addressDetail": address_detail,
                 "consignee": consignee,
                 "phone": phone,
+                "addressBookId": address_book_id,
                 "remark": remark,
                 "userId": user_id,
             }
@@ -454,7 +461,10 @@ async def create_user_order(
                 headers=_get_user_headers()
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            if result.get("code") == 1 and result.get("data"):
+                return result["data"]
+            return {"error": result.get("msg", "创建订单失败")}
         except httpx.HTTPError as e:
             return {"error": f"创建订单失败: {str(e)}"}
         except Exception as e:
@@ -840,6 +850,11 @@ _ALL_TOOL_DEFS = [
                     "phone": {
                         "type": "string",
                         "description": "联系电话",
+                    },
+                    "address_book_id": {
+                        "type": "string",
+                        "description": "地址簿ID，从get_user_default_address返回的addressBookId获取",
+                        "default": "",
                     },
                     "remark": {
                         "type": "string",

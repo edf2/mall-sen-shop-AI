@@ -4,11 +4,12 @@ import logging
 import re as regex
 from typing import AsyncGenerator, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from  langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, MessagesState, StateGraph
 
-from agent.config import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, MODEL_NAME, REDIS_URL, REDIS_TTL
+from agent.config import DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, MODEL_NAME, REDIS_URL, REDIS_TTL, AGENT_API_KEY
+from agent.observability import make_config
 from agent.redis_memory import RedisChatMemory
 from agent.tools import ADMIN_TOOLS, ADMIN_TOOL_MAP, USER_TOOLS, USER_TOOL_MAP, set_user_token
 
@@ -102,14 +103,21 @@ USER_SYSTEM_PROMPT = """你是一个微信商城的智能客服助手，帮助�
 - update_order_address: 修改订单的收货地址（需要订单ID和新地址）
 - apply_refund: 申请退款（需要订单ID和退款原因）
 - get_user_default_address: 获取用户的默认收货地址（自动获取联系人、电话、详细地址，无需用户手动输入）
-- create_user_order: 【核心】为用户创建订单（需要商品列表、收货地址、联系人、电话和用户ID）
+- create_user_order: 【核心】为用户创建订单（需要商品列表、收货地址、联系人、电话、地址簿ID和用户ID）
 - get_current_time: 获取当前时间
+
+商品卡片展示规则（重要）：
+- 当你主动向用户推荐商品时，在回复末尾单独一行添加商品卡片标记：[PRODUCTS:商品ID1,商品ID2]
+- 例如：用户问"有没有可乐"，你搜索后推荐可乐，回复末尾添加 [PRODUCTS:123]
+- 商品ID来自 search_products 返回结果中的 productId 字段
+- 只推荐用户提到的或你认为合适的商品，不要把所有搜索结果都标记
+- 如果只是回答用户问题（如查订单、改地址），不需要添加商品卡片标记
 
 下单流程（重要）：
 1. 用户表达下单意向后，先通过 search_products 搜索商品确认用户想要的商品
 2. 确认商品信息（名称、价格、数量）
-3. 调用 get_user_default_address 自动获取用户的默认收货地址（无需问用户地址信息）
-4. 调用 create_user_order 创建订单（自动将获取的地址信息传入）
+3. 调用 get_user_default_address 自动获取用户的默认收货地址（无需问用户地址信息，会返回addressBookId）
+4. 调用 create_user_order 创建订单（务必传入address_book_id，从get_user_default_address返回的addressBookId获取）
 5. 如果没有默认地址，再询问用户手动提供收货地址、联系人和电话
 6. 下单成功后，清晰告知用户订单金额和订单号，并询问是否要去支付
 7. 提醒用户订单需在15分钟内完成支付，超时订单将自动取消
@@ -145,16 +153,141 @@ def _extract_order_data(messages) -> dict | None:
             for tc in m.tool_calls:
                 if tc.get("name") == "create_user_order":
                     target_id = tc["id"]
+                    logger.info(f"找到 create_user_order 调用, target_id={target_id}")
+                    for tm in messages[i + 1:]:
+                        if isinstance(tm, ToolMessage) and tm.tool_call_id == target_id:
+                            logger.info(f"找到对应的 ToolMessage, content={tm.content[:200]}")
+                            try:
+                                data = json.loads(tm.content)
+                                logger.info(f"解析订单数据: {data}")
+                                if isinstance(data, dict) and data.get("orderId"):
+                                    logger.info(f"成功提取订单数据: orderId={data.get('orderId')}")
+                                    return data
+                                else:
+                                    logger.info(f"订单数据中没有 orderId: {data}")
+                            except Exception as e:
+                                logger.error(f"解析订单数据失败: {e}")
+                            return None
+                    return None
+    logger.info("未找到 create_user_order 调用")
+    return None
+
+
+def _extract_order_data_from_dicts(msgs: list[dict]) -> dict | None:
+    """从 Redis 存储的 dict 格式消息中提取 create_user_order 的订单数据"""
+    for i, m in enumerate(msgs):
+        if m.get("type") == "ai":
+            data = m.get("data", {})
+            tool_calls = data.get("tool_calls") or []
+            for tc in tool_calls:
+                if tc.get("name") == "create_user_order":
+                    tc_id = tc.get("id", "")
+                    for tm in msgs[i + 1:]:
+                        if tm.get("type") == "tool":
+                            tm_data = tm.get("data", {})
+                            if tm_data.get("tool_call_id") == tc_id:
+                                try:
+                                    content = tm_data.get("content", "")
+                                    parsed = json.loads(content) if isinstance(content, str) else content
+                                    if isinstance(parsed, dict) and parsed.get("orderId"):
+                                        return parsed
+                                except Exception:
+                                    pass
+                                return None
+                    return None
+    return None
+
+
+def _extract_product_data(messages) -> list[dict] | None:
+    """从AI回复中提取 [PRODUCTS:ID1,ID2] 标记，返回对应的商品数据"""
+    import re as _re
+    # 找到所有 search_products 的结果
+    all_products = {}
+    for i, m in enumerate(messages):
+        if isinstance(m, AIMessage) and m.tool_calls:
+            for tc in m.tool_calls:
+                if tc.get("name") == "search_products":
+                    target_id = tc["id"]
                     for tm in messages[i + 1:]:
                         if isinstance(tm, ToolMessage) and tm.tool_call_id == target_id:
                             try:
                                 data = json.loads(tm.content)
-                                if isinstance(data, dict) and data.get("code") == 1 and data.get("data"):
-                                    return data["data"]
+                                if isinstance(data, dict) and data.get("code") == 1:
+                                    records = data.get("data", {}).get("records", [])
+                                    for p in records:
+                                        pid = p.get("productId")
+                                        if pid is not None:
+                                            all_products[str(pid)] = p
                             except Exception:
                                 pass
-                            return None
-                    return None
+                            break
+    if not all_products:
+        return None
+
+    # 从AI回复中提取 [PRODUCTS:ID1,ID2] 标记
+    for m in reversed(messages):
+        if isinstance(m, AIMessage) and m.content:
+            match = _re.search(r'\[PRODUCTS:([\d,\s]+)\]', m.content)
+            if match:
+                ids_str = match.group(1)
+                ids = [x.strip() for x in ids_str.split(',') if x.strip()]
+                result = []
+                for pid in ids:
+                    if pid in all_products:
+                        result.append(all_products[pid])
+                if result:
+                    return result
+            break
+    return None
+
+
+def _extract_product_data_from_dicts(msgs: list[dict]) -> list[dict] | None:
+    """从 Redis 存储的 dict 格式消息中提取 [PRODUCTS:ID1,ID2] 标记对应的商品数据"""
+    import re as _re
+    all_products = {}
+    for i, m in enumerate(msgs):
+        if m.get("type") == "ai":
+            data = m.get("data", {})
+            tool_calls = data.get("tool_calls") or []
+            for tc in tool_calls:
+                if tc.get("name") == "search_products":
+                    tc_id = tc.get("id", "")
+                    for tm in msgs[i + 1:]:
+                        if tm.get("type") == "tool":
+                            tm_data = tm.get("data", {})
+                            if tm_data.get("tool_call_id") == tc_id:
+                                try:
+                                    content = tm_data.get("content", "")
+                                    parsed = json.loads(content) if isinstance(content, str) else content
+                                    if isinstance(parsed, dict) and parsed.get("code") == 1:
+                                        records = parsed.get("data", {}).get("records", [])
+                                        for p in records:
+                                            pid = p.get("productId")
+                                            if pid is not None:
+                                                all_products[str(pid)] = p
+                                except Exception:
+                                    pass
+                                break
+
+    if not all_products:
+        return None
+
+    # 从AI回复中提取 [PRODUCTS:ID1,ID2] 标记
+    for m in reversed(msgs):
+        if m.get("type") == "ai":
+            content = m.get("data", {}).get("content", "")
+            if content:
+                match = _re.search(r'\[PRODUCTS:([\d,\s]+)\]', content)
+                if match:
+                    ids_str = match.group(1)
+                    ids = [x.strip() for x in ids_str.split(',') if x.strip()]
+                    result = []
+                    for pid in ids:
+                        if pid in all_products:
+                            result.append(all_products[pid])
+                    if result:
+                        return result
+                break
     return None
 
 
@@ -169,7 +302,7 @@ async def _persist(session_id: str, role: str, messages) -> None:
         logger.error(f"保存记忆失败: {e}")
 
 
-async def run_agent(user_message: str, role: str = "user", user_id: str = "", session_id: str = "", token: str = "") -> tuple[str, dict | None]:
+async def run_agent(user_message: str, role: str = "user", user_id: str = "", session_id: str = "", token: str = "") -> tuple[str, dict | None, list[dict] | None]:
     app = _get_app(role)
 
     if role == "user":
@@ -181,15 +314,20 @@ async def run_agent(user_message: str, role: str = "user", user_id: str = "", se
         msgs.append(SystemMessage(content=f"当前用户ID: {user_id}（你在调用 get_user_default_address 和 create_user_order 时，请使用此 user_id 参数）"))
     msgs.append(HumanMessage(content=user_message))
     inputs = {"messages": history + msgs}
-    result = await app.ainvoke(inputs)
+    # Phoenix 追踪：全局 OTel 插桩自动捕获，仅在 config.metadata 挂会话/用户标签
+    config = make_config(session_id=session_id, user_id=user_id, role=role)
+    result = await app.ainvoke(inputs, config=config)
 
     await _persist(session_id, role, result["messages"])
 
     order_data = _extract_order_data(result["messages"])
+    product_data = _extract_product_data(result["messages"])
     for msg in reversed(result["messages"]):
         if isinstance(msg, AIMessage) and msg.content:
-            return msg.content, order_data
-    return "抱歉，我没有生成有效的回复。", order_data
+            # 移除 [PRODUCTS:ID] 标记后再返回
+            clean_content = regex.sub(r'\s*\[PRODUCTS:[\d,\s]+\]\s*', '', msg.content).strip()
+            return clean_content, order_data, product_data
+    return "抱歉，我没有生成有效的回复。", order_data, product_data
 
 
 async def run_agent_stream(user_message: str, role: str = "user", session_id: str = "", token: str = "") -> AsyncGenerator[str, None]:
@@ -200,12 +338,14 @@ async def run_agent_stream(user_message: str, role: str = "user", session_id: st
 
     history = await memory.get_messages(session_id)
     inputs = {"messages": history + [HumanMessage(content=user_message)]}
+    # Phoenix 追踪：流式路径同样被全局插桩捕获（token 流式增量也会被统计）
+    obs_config = make_config(session_id=session_id, role=role)
 
     collected = []
     state_candidates = []
 
     try:
-        async for event in app.astream_events(inputs, version="v1"):
+        async for event in app.astream_events(inputs, version="v1", config=obs_config):
             kind = event["event"]
             if kind == "on_chat_model_stream":
                 content = event["data"]["chunk"].content
@@ -217,7 +357,25 @@ async def run_agent_stream(user_message: str, role: str = "user", session_id: st
                 if isinstance(output, dict) and isinstance(output.get("messages"), list):
                     state_candidates.append(output["messages"])
     finally:
-        # 取完整消息状态（含工具调用历史），与 run_agent 的记忆策略保持一致
+        # 先尝试从 state_candidates 提取并持久化
         final_msgs = max(state_candidates, key=len, default=None)
         if final_msgs and session_id:
             await _persist(session_id, role, final_msgs)
+
+        # 从 Redis 读取已持久化的消息来提取 order_data 和 product_data（最可靠）
+        if session_id:
+            try:
+                saved = await memory.get_session_messages(session_id)
+                od = _extract_order_data_from_dicts(saved)
+                pd = _extract_product_data_from_dicts(saved)
+                if od:
+                    order_event = json.dumps({"order_data": od}, ensure_ascii=False)
+                    yield f"\n\n__ORDER_DATA__:{order_event}"
+                if pd:
+                    product_event = json.dumps({"product_data": pd}, ensure_ascii=False)
+                    yield f"\n\n__PRODUCT_DATA__:{product_event}"
+            except Exception as e:
+                logger.error(f"从Redis提取数据失败: {e}")
+
+        # 发送清理标记，让前端移除 [PRODUCTS:ID] 文本
+        yield "\n\n__CLEAN_PRODUCTS_MARKER__"
