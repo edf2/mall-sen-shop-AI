@@ -3,7 +3,7 @@
 > Mall 森百货电商（Java 后端 [Mall-Sen-shop](https://github.com/edf2/Mall-Sen-shop)）的 AI 智能体服务层：
 > **商家补货分析助手 + 用户智能客服** 双 Agent，LangGraph 工具调用循环驱动，工具全部对接 Java 后端真实 API。
 >
-> Python (FastAPI + LangGraph + LangChain) · Redis 会话记忆 · SSE 流式输出 · Langfuse 可观测性
+> Python (FastAPI + LangGraph + LangChain) · Redis 会话记忆 · SSE 流式输出 · Arize Phoenix 可观测性（fail-safe）
 
 ## 架构总览
 
@@ -31,6 +31,15 @@ Java 后端 (Spring Boot 3, :8080)  ──x-agent-key──▶  本服务 (FastA
 
 **核心机制（Agent ≠ 一问一答的聊天 API）：**
 LLM 节点推理决策 → 决定调用哪个工具 → 路由到工具节点执行 → 结果回填消息列表 → 再喂回 LLM → 循环直到 LLM 不再发起 `tool_calls`（ReAct 模式）。`agent/agent.py` 的 `_build_workflow()` 用同一工厂函数构建商家/用户两条 StateGraph，复用工具执行器。
+
+## 实际运行效果
+
+<table>
+  <tr>
+    <td width="50%" align="center"><b>用户智能客服</b><br><sub>小程序端 · 按真实销量推荐热销榜，可直接代客下单</sub><br><img src="docs/images/ai-user-chat.png" width="240"/></td>
+    <td width="50%" align="center"><b>商家智能助手</b><br><sub>管理后台端 · 缺货预测与补货分析</sub><br><img src="docs/images/ai-admin-chat.png" width="420"/></td>
+  </tr>
+</table>
 
 ## 双 Agent 与工具清单（15 个，全部真实接口）
 
@@ -60,7 +69,7 @@ LLM 节点推理决策 → 决定调用哪个工具 → 路由到工具节点执
 1. **鉴权：x-agent-key 共享密钥替代 JWT**。
    AI 初版用静态管理员 JWT 调 Java 接口，8 天 TTL 过期后**整个商家 AI 静默失效**且无刷新机制（排查"AI 突然全部工具报 401"时定位到）。改为无过期时间的共享密钥：Java 端 `JwtTokenAdminInterceptor` 对 `/admin/business/ai/**` 放行并校验 `x-agent-key`。本服务对等防护：`/agent/**` 入口同样要求该密钥（`secrets.compare_digest` 防时序攻击）。
 2. **任务级 token 隔离**：用户工具以 `contextvars.ContextVar` 注入当前请求的用户 JWT（而非全局变量），并发会话互不串号；async 上下文安全。
-3. **三层 fail-safe 的可观测性**（`agent/langfuse_obs.py`）：未配密钥→自动禁用；配了没装包→警告降级；单 handler 异常→只丢本次追踪。**可观测性是旁路，任何一层故障都不能影响业务**——与 `AGENT_API_KEY` 的 fail-fast（安全必需项，缺了拒绝启动）刻意相反。
+3. **三层 fail-safe 的可观测性**（`agent/observability.py`，Arize Phoenix）：未装包→警告降级；初始化失败→本次不追踪；导出失败→只丢追踪。**可观测性是旁路，任何一层故障都不能影响业务**——与 `AGENT_API_KEY` 的 fail-fast（安全必需项，缺了拒绝启动）刻意相反。（早期用 Langfuse 云端，后迁移到本地 Phoenix，`langfuse_obs.py` 保留为遗留兼容层）
 4. **会话记忆**：`RedisChatMemory` 按会话存全量消息（含工具调用历史），TTL 过期；ZSet 索引支持会话列表/回放。多轮上下文里 Agent 能"记得"之前查过什么。
 5. **结构化事件提取**：从对话流里提取订单数据（`__ORDER_DATA__`）与商品卡片（`[PRODUCTS:ID]` 标记），前端据此渲染订单确认页/商品卡片——LLM 自然语言输出之外的第二数据通道。
 
@@ -76,7 +85,7 @@ cp .env.example .env
 #   DASHSCOPE_API_KEY  —— 阿里云百炼 API Key（模型 qwen 系列）
 #   AGENT_API_KEY      —— 与 Java 后端 application.yml 的 agent.service.api-key 一致（32 位强随机串）
 # 可选（观测）：
-#   LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST —— 配了即启用追踪，不配自动禁用
+#   PHOENIX_ENDPOINT / PHOENIX_PROJECT_NAME —— Arize Phoenix 本地追踪（默认 http://localhost:6006/v1/traces），未装包自动降级、不影响业务
 
 # 3. 前置服务
 #    Java 后端 :8080（Mall-Sen-shop） + Redis :6379
@@ -99,7 +108,8 @@ mall-sen-shop-AI/
 │   ├── agent.py             # LangGraph 双工作流构建 + 工具执行器 + 结构化数据提取
 │   ├── tools.py             # 15 个 Function Calling 工具（httpx 调 Java API，双鉴权头）
 │   ├── redis_memory.py      # RedisChatMemory：会话消息持久化 + ZSet 会话索引
-│   ├── langfuse_obs.py      # Langfuse 追踪接入（v5 API，三层 fail-safe，含版本兼容层）
+│   ├── observability.py     # Arize Phoenix 追踪接入（三层 fail-safe）
+│   ├── langfuse_obs.py      # Langfuse 追踪接入（遗留兼容层）
 │   ├── config.py            # 环境变量加载（安全项 fail-fast）
 │   └── nacos_registry.py    # 服务注册（可选，失败不影响启动）
 ├── static/chat.html         # 本机调试聊天页（自动带 x-agent-key）
@@ -127,4 +137,4 @@ mall-sen-shop-AI/
 
 > AI 辅助开发、人工架构与验收：本项目为个人学习/求职作品，代码经 AI 辅助生成，**架构设计、关键决策（鉴权方案、降级策略、记忆设计）与踩坑修复均由本人主导并逐行验证**——包括 JWT 静默失效排障、Langfuse v3→v5 API 迁移、Windows 压测端口耗尽排障等。
 
-
+> AI生成
